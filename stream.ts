@@ -10,6 +10,7 @@
  *  - SSE parsing of Mistral chat-completions chunks (ThinkChunk content,
  *    tool calls, trailing usage-only chunk, cached tokens)
  */
+import { appendFileSync } from "node:fs";
 import type {
   AssistantMessage,
   AssistantMessageEventStream,
@@ -39,6 +40,28 @@ import {
 const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
 const MAX_ERROR_BODY_CHARS = 4000;
 
+/**
+ * Opt-in debug logging: MISTRAL_VIBE_DEBUG=1 appends one JSON line per
+ * request to $MISTRAL_VIBE_DEBUG_LOG (default /tmp/mistral-vibe-debug.log)
+ * with the wire request (auth excluded), first thinking delta, usage/cost and
+ * stop reason. Lets you verify reasoning_effort, cache hits and session
+ * pricing without touching the code.
+ */
+const DEBUG_ENABLED = process.env.MISTRAL_VIBE_DEBUG === "1";
+const DEBUG_LOG_PATH =
+  process.env.MISTRAL_VIBE_DEBUG_LOG ?? "/tmp/mistral-vibe-debug.log";
+function debugLog(entry: Record<string, unknown>): void {
+  if (!DEBUG_ENABLED) return;
+  try {
+    appendFileSync(
+      DEBUG_LOG_PATH,
+      `${JSON.stringify({ ts: Date.now(), ...entry })}\n`,
+    );
+  } catch {
+    // Logging must never break a request.
+  }
+}
+
 type OutputMessage = AssistantMessage & {
   content: Array<{
     type: "text" | "thinking" | "toolCall";
@@ -51,6 +74,7 @@ type OutputMessage = AssistantMessage & {
   }>;
   rawStopReason?: string;
   responseId?: string;
+  debugLoggedThinking?: boolean;
 };
 
 export function streamMistralVibe(
@@ -73,8 +97,11 @@ export function streamMistralVibe(
         );
       }
 
-      const reasoningLevel =
-        options?.reasoning ?? (model.reasoning ? "high" : "off");
+      // pi only sets options.reasoning when the effective thinking level is
+      // not "off" (compaction.js: `if (model.reasoning && thinkingLevel &&
+      // thinkingLevel !== "off") options.reasoning = thinkingLevel`). So
+      // undefined means the user chose off — never fall back to a default.
+      const reasoningLevel = options?.reasoning ?? "off";
       const reasoningEffort = mapThinkingToReasoningEffort(reasoningLevel);
       // vibe forces temperature=1.0 whenever reasoning is active.
       const temperature =
@@ -124,6 +151,21 @@ export function streamMistralVibe(
         payload = nextPayload;
       }
 
+      debugLog({
+        event: "request",
+        model: model.id,
+        url: payload.url,
+        headers: { ...payload.headers, authorization: undefined },
+        reasoning_effort: payload.body.reasoning_effort,
+        options_reasoning: options?.reasoning ?? null,
+        reasoningLevel,
+        temperature: payload.body.temperature,
+        max_tokens: payload.body.max_tokens,
+        x_affinity: payload.headers["x-affinity"] ?? null,
+        prompt_cache_key: payload.body.prompt_cache_key ?? null,
+        messageCount: (payload.body.messages as unknown[])?.length,
+      });
+
       const fetcher = options?.fetch ?? fetch;
       const response = await fetcher(payload.url, {
         method: "POST",
@@ -160,6 +202,16 @@ export function streamMistralVibe(
         throw new Error(output.errorMessage || "An unknown error occurred");
       }
 
+      debugLog({
+        event: "done",
+        model: model.id,
+        stopReason: output.stopReason,
+        usage: output.usage,
+        cost: output.usage.cost,
+        responseId: output.responseId,
+        contentTypes: output.content.map((b) => b.type),
+      });
+
       stream.push({ type: "done", reason: output.stopReason, message: output });
       stream.end();
     } catch (error) {
@@ -170,6 +222,11 @@ export function streamMistralVibe(
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage =
         error instanceof Error ? error.message : String(error);
+      debugLog({
+        event: "error",
+        model: model.id,
+        message: output.errorMessage,
+      });
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     }
@@ -299,6 +356,15 @@ function handleChunk(
             .join(""),
         );
         if (!thinkingDelta) continue;
+        if (!output.debugLoggedThinking) {
+          output.debugLoggedThinking = true;
+          debugLog({
+            event: "thinking_delta",
+            model: output.model,
+            preview: thinkingDelta.slice(0, 200),
+            deltaLength: thinkingDelta.length,
+          });
+        }
         pushThinkingDelta(output, stream, thinkingDelta);
         continue;
       }

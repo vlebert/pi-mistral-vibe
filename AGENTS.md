@@ -34,6 +34,7 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
 ## Vérifs rapides
 
 ```bash
-pi --list-models | grep mistral-vibe   # chargement ok + modèles
+pi --list-models | grep mistral-vibe   # chargement ok + modèles (hors providers d'extensions)
 # dans pi : /mistral-vibe-status
+# debug wire : MISTRAL_VIBE_DEBUG=1 pi ...  → /tmp/mistral-vibe-debug.log
 ```

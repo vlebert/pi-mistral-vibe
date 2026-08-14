@@ -19,6 +19,20 @@ import { streamMistralVibe } from "./stream.js";
 
 const PROVIDER_ID = "mistral-vibe";
 
+/**
+ * Real model specs (docs.mistral.ai) keyed by the vibe config model name.
+ * Fallback: auto_compact_threshold (vibe's compaction trigger, NOT the context
+ * window) or a conservative 200k. Override any value via pi models.json.
+ */
+const KNOWN_MODEL_SPECS: Record<
+  string,
+  { contextWindow: number; maxTokens: number }
+> = {
+  "zai-glm-5-2": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.2 (Mistral-hosted)
+  "mistral-vibe-cli-latest": { contextWindow: 262_144, maxTokens: 16_384 }, // mistral-medium-3.5
+  "devstral-small-latest": { contextWindow: 262_144, maxTokens: 16_384 },
+};
+
 /** vibe thinking level -> pi thinking levels (informational; wire mapping happens in stream). */
 const THINKING_LEVEL_MAP = {
   off: "off",
@@ -109,7 +123,8 @@ function modelToPi(
 ): ProviderModelConfig {
   const thinking = m.thinking ?? "off";
   const supportsImages = m.supports_images ?? false;
-  const contextWindow = m.auto_compact_threshold ?? 200_000;
+  const spec = KNOWN_MODEL_SPECS[m.name];
+  const contextWindow = spec?.contextWindow ?? m.auto_compact_threshold ?? 200_000;
   return {
     id: m.name, // wire id: what vibe sends as `model`
     name: m.alias ?? m.name, // display name
@@ -123,7 +138,7 @@ function modelToPi(
       cacheWrite: 0,
     },
     contextWindow,
-    maxTokens: 16_384,
+    maxTokens: spec?.maxTokens ?? 16_384,
   };
 }
 

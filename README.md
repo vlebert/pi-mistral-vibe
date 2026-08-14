@@ -77,10 +77,42 @@ Différences volontaires avec le provider `mistral` natif de pi :
 ## Vérification de la parité
 
 1. `/mistral-vibe-status` → base URL, User-Agent, modèles, source de clé.
-2. Comparer le body/headers émis : `pi` a un hook `before_provider_request`
-   (console.log du payload) et `before_provider_headers`.
-3. Test réel : `pi -p "dis bonjour" -m mistral-vibe/zai-glm-5-2` (consomme du
-   crédit API).
+2. **Debug wire** : `MISTRAL_VIBE_DEBUG=1 pi …` (ou dans une session interactive)
+   → une ligne JSON par requête dans `/tmp/mistral-vibe-debug.log`
+   (`MISTRAL_VIBE_DEBUG_LOG` pour changer le chemin) : request (url, headers,
+   `reasoning_effort`, température, x-affinity, `prompt_cache_key`), premier
+   delta thinking, usage/cost et stopReason au `done`. Vérifie reasoning, cache
+   et pricing sans toucher au code.
+3. Comparer le body/headers émis : hooks pi `before_provider_request` /
+   `before_provider_headers`.
+4. Test réel : `pi -p "…" -m mistral-vibe/zai-glm-5-2` (consomme du crédit).
+
+## Fenêtre de contexte des modèles
+
+La config vibe (`auto_compact_threshold`) est un **seuil d'auto-compaction**, pas
+la fenêtre réelle du modèle. L'extension utilise donc des specs connues
+(`KNOWN_MODEL_SPECS`, d'après docs.mistral.ai), avec repli sur
+`auto_compact_threshold` :
+
+| Modèle | Context window | Max output |
+|---|---|---|
+| zai-glm-5-2 | 1 000 000 | 128 000 |
+| mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
+| devstral-small-latest | 262 144 | 16 384 |
+
+Toute valeur reste surchargeable via `models.json` de pi
+(`mistral-vibe/<id>.contextWindow` / `maxTokens`).
+
+## Thinking
+
+- Niveau par défaut pi : `medium` → `reasoning_effort: "high"` envoyé (comme la
+  config vibe `thinking = "high"` de zai). `:low` → `"none"`, `:off` → champ
+  omis.
+- Température forcée à 1.0 dès que `reasoning_effort` est envoyé (comportement
+  vibe).
+- Le modèle peut légitimement ne pas émettre de thinking sur une question
+  triviale (GLM 5.2 décide) ; `contentTypes` du log montre
+  `["text","thinking","text"]` quand il raisonne.
 
 ## Dépannage
 
