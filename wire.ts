@@ -204,9 +204,10 @@ export interface PiMessageLike {
 export interface MistralChatMessage {
   role: string;
   content?: unknown;
-  toolCallId?: string;
+  /** Wire field: Mistral expects snake_case (`tool_call_id` / `tool_calls`). */
+  tool_call_id?: string;
   name?: string;
-  toolCalls?: unknown[];
+  tool_calls?: unknown[];
 }
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER =
@@ -428,7 +429,7 @@ export function toMistralMessages(
             return { type: "text", text: sanitizeSurrogates(item.text ?? "") };
           return {
             type: "image_url",
-            imageUrl: `data:${item.mimeType};base64,${item.data}`,
+            image_url: `data:${item.mimeType};base64,${item.data}`,
           };
         });
       if (parts.length > 0) {
@@ -480,7 +481,7 @@ export function toMistralMessages(
       }
       const assistantMessage: MistralChatMessage = { role: "assistant" };
       if (contentParts.length > 0) assistantMessage.content = contentParts;
-      if (toolCalls.length > 0) assistantMessage.toolCalls = toolCalls;
+      if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
       if (contentParts.length > 0 || toolCalls.length > 0) {
         result.push(assistantMessage);
       }
@@ -513,7 +514,7 @@ export function toMistralMessages(
       }
       result.push({
         role: "tool",
-        toolCallId: msg.toolCallId,
+        tool_call_id: msg.toolCallId,
         name: msg.toolName,
         content: toolContent,
       });

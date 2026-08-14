@@ -75,6 +75,7 @@ type OutputMessage = AssistantMessage & {
   rawStopReason?: string;
   responseId?: string;
   debugLoggedThinking?: boolean;
+  toolCallBlocksByIndex?: Map<number, (typeof content)[number]>;
 };
 
 export function streamMistralVibe(
@@ -190,6 +191,23 @@ export function streamMistralVibe(
 
       for await (const chunk of parseMistralSse(response.body)) {
         handleChunk(model, output, stream, chunk);
+      }
+
+      // Finalize streamed blocks: close the last text/thinking block and emit
+      // toolcall_end for every accumulated tool call.
+      finishCurrentBlock(output, stream);
+      if (output.toolCallBlocksByIndex) {
+        for (const block of output.toolCallBlocksByIndex.values()) {
+          if (block.type !== "toolCall") continue;
+          // Strip the scratch buffer so replay only carries parsed arguments.
+          delete block.partialArgs;
+          stream.push({
+            type: "toolcall_end",
+            contentIndex: output.content.indexOf(block),
+            toolCall: block,
+            partial: output,
+          });
+        }
       }
 
       if (options?.signal?.aborted) {
@@ -375,33 +393,45 @@ function handleChunk(
   }
 
   const toolCalls = (delta?.tool_calls ?? []) as Array<Record<string, unknown>>;
+  let toolBlocksByIndex = output.toolCallBlocksByIndex;
+  if (!toolBlocksByIndex) {
+    toolBlocksByIndex = new Map<number, (typeof output.content)[number]>();
+    output.toolCallBlocksByIndex = toolBlocksByIndex;
+  }
   for (const toolCall of toolCalls) {
     finishCurrentBlock(output, stream);
-    const rawId =
+    // Mistral streams the tool-call id on some chunks only; accumulate by
+    // index and adopt the real id/name whenever they arrive, instead of
+    // creating a phantom block for every id-less chunk.
+    const index =
+      typeof toolCall.index === "number" ? toolCall.index : toolBlocksByIndex.size;
+    const chunkId =
       typeof toolCall.id === "string" && toolCall.id !== "null"
         ? toolCall.id
-        : deriveMistralToolCallId(`toolcall:${toolCall.index ?? 0}`);
-    const index = typeof toolCall.index === "number" ? toolCall.index : 0;
-    const key = `${rawId}:${index}`;
+        : undefined;
     const functionPart = (toolCall.function ?? {}) as Record<string, unknown>;
+    const chunkName =
+      typeof functionPart.name === "string" ? functionPart.name : undefined;
 
-    let block = output.content.find(
-      (b) => b.type === "toolCall" && b.id === rawId && b.partialArgs !== undefined,
-    );
+    let block = toolBlocksByIndex.get(index);
     if (!block) {
       block = {
         type: "toolCall",
-        id: rawId,
-        name: typeof functionPart.name === "string" ? functionPart.name : "",
+        id: chunkId ?? deriveMistralToolCallId(`toolcall:${index}`),
+        name: chunkName ?? "",
         arguments: {},
         partialArgs: "",
       };
       output.content.push(block);
+      toolBlocksByIndex.set(index, block);
       stream.push({
         type: "toolcall_start",
         contentIndex: output.content.length - 1,
         partial: output,
       });
+    } else {
+      if (chunkId && block.id !== chunkId) block.id = chunkId;
+      if (chunkName && !block.name) block.name = chunkName;
     }
 
     const argsDelta =

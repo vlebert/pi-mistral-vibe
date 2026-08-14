@@ -12,6 +12,13 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
   actif, `x-affinity` toujours, `user-agent:
   mistral-client-python/Mistral-Vibe/<version>`). Toute dérive doit être
   documentée explicitement dans README.md.
+- **Champs de messages en snake_case sur le wire** : on fait du fetch brut (pas
+  de SDK) → les messages doivent porter `tool_calls`, `tool_call_id`,
+  `image_url` (jamais camelCase) — sinon l'API Mistral répond 422
+  `extra_forbidden`. Vérifier avec le test tools multi-tour.
+- **Accumulation des tool calls par index** : Mistral/GLM ne fournit l'id que
+  sur certains chunks — ne jamais créer un nouveau bloc par chunk (id absent →
+  phantom), adopter id/name quand ils arrivent.
 - **Source de vérité du comportement** : le code local de vibe
   (`~/.local/share/uv/tools/mistral-vibe/lib/*/site-packages/vibe/`,
   surtout `core/llm/backend/mistral.py`, `utils/http.py`) et le SDK

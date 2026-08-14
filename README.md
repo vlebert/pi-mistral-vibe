@@ -57,7 +57,9 @@ x-affinity: <session_id>
 
 Body :
 
-- `model`, `messages` (ThinkChunk rejoués pour le multi-tour), `stream: true`
+- `model`, `messages` (ThinkChunk rejoués pour le multi-tour ; champs en
+  **snake_case** : `tool_calls`, `tool_call_id`, `image_url` — fetch brut sans
+  SDK), `stream: true`
 - `reasoning_effort`: `none` (minimal/low) / `high` (medium/high/xhigh/max),
   **omis** si thinking `off` — pour **tous** les modèles (comme vibe)
 - `temperature`: forcée à **1.0** dès que `reasoning_effort` est envoyé
