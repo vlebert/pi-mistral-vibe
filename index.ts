@@ -30,7 +30,6 @@ const KNOWN_MODEL_SPECS: Record<
 > = {
   "zai-glm-5-2": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.2 (Mistral-hosted)
   "mistral-vibe-cli-latest": { contextWindow: 262_144, maxTokens: 16_384 }, // mistral-medium-3.5
-  "devstral-small-latest": { contextWindow: 262_144, maxTokens: 16_384 },
 };
 
 /** vibe thinking level -> pi thinking levels (informational; wire mapping happens in stream). */

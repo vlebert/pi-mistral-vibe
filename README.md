@@ -17,7 +17,6 @@ chargement.
 ```bash
 pi -m mistral-vibe/mistral-vibe-cli-latest   # défaut harness (= mistral-medium-3.5)
 pi -m mistral-vibe/zai-glm-5-2               # modèle de ta config vibe
-pi -m mistral-vibe/devstral-small-latest
 
 # NB: les providers d'extensions n'apparaissent pas dans `pi --list-models`;
 # vérifier l'enregistrement via le sélecteur /model ou /mistral-vibe-status.
@@ -35,7 +34,8 @@ Dans l'UI : `/model` puis sélection, ou Ctrl+P. Statut du provider :
 |---|---|
 | Clé API | env `MISTRAL_API_KEY`, puis `~/.vibe/.env` (là où vibe persiste sa clé) |
 | `api_base` | `~/.vibe/config.toml` → `[[providers]]` `mistral` (défaut `https://api.mistral.ai/v1`) |
-| Modèles | `~/.vibe/config.toml` → `[[models]]` dont le provider tourne sur le backend mistral + les `DEFAULT_MODELS` du harness (`mistral-vibe-cli-latest`, `devstral-small-latest`) |
+| Modèles | `~/.vibe/config.toml` → `[[models]]` dont le provider tourne sur le backend mistral + le modèle par défaut du harness `mistral-vibe-cli-latest` (= mistral-medium-3.5) |
+| Prix | **USD officiels** (mistral.ai/pricing) : hardcodés pour `mistral-vibe-cli-latest` ($1.5 / $0.15 cache / $7.5), lus du `config.toml` pour les modèles de la config (zai-glm-5-2 : $1.4 / $0.14 cache / $4.4 — corrigé dans le toml) |
 | Version UA | paquet installé (`uv/tools/mistral-vibe/.../vibe/__init__.py`), fallback constant |
 
 Seuls les modèles du **backend mistral** sont enregistrés (les modèles
@@ -98,7 +98,6 @@ la fenêtre réelle du modèle. L'extension utilise donc des specs connues
 |---|---|---|
 | zai-glm-5-2 | 1 000 000 | 128 000 |
 | mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
-| devstral-small-latest | 262 144 | 16 384 |
 
 Toute valeur reste surchargeable via `models.json` de pi
 (`mistral-vibe/<id>.contextWindow` / `maxTokens`).

@@ -117,7 +117,10 @@ export function findInstalledVibeVersion(): string | undefined {
   return undefined;
 }
 
-/** The harness DEFAULT_MODELS on the mistral provider (vibe_schema.py). */
+/** The harness DEFAULT_MODELS on the mistral provider (vibe_schema.py).
+ *  Kept minimal: only the vibe default `mistral-vibe-cli-latest`
+ *  (alias mistral-medium-3.5). Official USD pricing (mistral.ai/pricing):
+ *  input $1.5 / cached $0.15 / output $7.5 per Mtok. */
 export function harnessDefaultModels(): VibeModelConfig[] {
   return [
     {
@@ -130,16 +133,6 @@ export function harnessDefaultModels(): VibeModelConfig[] {
       output_price: 7.5,
       cached_input_price: 0.15,
       supports_images: true,
-    },
-    {
-      name: "devstral-small-latest",
-      provider: "mistral",
-      alias: "devstral-small",
-      temperature: 1.0,
-      thinking: "off",
-      input_price: 0.1,
-      output_price: 0.3,
-      cached_input_price: 0.01,
     },
   ];
 }
