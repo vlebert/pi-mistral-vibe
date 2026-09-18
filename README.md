@@ -17,6 +17,7 @@ chargement.
 ```bash
 pi -m mistral-vibe/mistral-vibe-cli-latest   # défaut harness (= mistral-medium-3.5)
 pi -m mistral-vibe/zai-glm-5-2               # modèle de ta config vibe
+pi -m mistral-vibe/zai-glm-5-3               # modèle de ta config vibe
 
 # NB: les providers d'extensions n'apparaissent pas dans `pi --list-models`;
 # vérifier l'enregistrement via le sélecteur /model ou /mistral-vibe-status.
@@ -35,12 +36,63 @@ Dans l'UI : `/model` puis sélection, ou Ctrl+P. Statut du provider :
 | Clé API | env `MISTRAL_API_KEY`, puis `~/.vibe/.env` (là où vibe persiste sa clé) |
 | `api_base` | `~/.vibe/config.toml` → `[[providers]]` `mistral` (défaut `https://api.mistral.ai/v1`) |
 | Modèles | `~/.vibe/config.toml` → `[[models]]` dont le provider tourne sur le backend mistral + le modèle par défaut du harness `mistral-vibe-cli-latest` (= mistral-medium-3.5) |
-| Prix | **USD officiels** (mistral.ai/pricing) : hardcodés pour `mistral-vibe-cli-latest` ($1.5 / $0.15 cache / $7.5), lus du `config.toml` pour les modèles de la config (zai-glm-5-2 : $1.4 / $0.14 cache / $4.4 — corrigé dans le toml) |
+| Prix | **USD officiels** (mistral.ai/pricing) : hardcodés pour `mistral-vibe-cli-latest` ($1.5 / $0.15 cache / $7.5), lus du `config.toml` pour les modèles de la config (GLM 5.2/5.3 : $1.4 / $0.14 cache / $4.4) |
 | Version UA | paquet installé (`uv/tools/mistral-vibe/.../vibe/__init__.py`), fallback constant |
 
 Seuls les modèles du **backend mistral** sont enregistrés (les modèles
 deepseek/llamacpp de la config sont ignorés). Les entrées de la config
 remportent sur les défauts du harness en cas de doublon d'id.
+
+## Configurer un modèle dans Mistral Vibe (`~/.vibe/config.toml`)
+
+Pour qu'un modèle soit proposé par le plugin, il doit avoir une entrée
+`[[models]]` dans `~/.vibe/config.toml` dont le provider tourne sur le backend
+mistral. Exemple complet :
+
+```toml
+# Provider mistral — optionnel : ces valeurs sont les défauts du plugin.
+# À ne déclarer que pour surcharger api_base ou la variable de clé.
+[[providers]]
+name = "mistral"
+api_base = "https://api.mistral.ai/v1"
+api_key_env_var = "MISTRAL_API_KEY"
+backend = "mistral"
+
+[[models]]
+name = "zai-glm-5-3"            # id envoyé sur le wire (champ `model`) et id pi
+alias = "zai-glm-5-3"           # nom affiché (optionnel, défaut : name)
+provider = "mistral"            # ⚠️ doit être sur le backend mistral
+thinking = "high"               # off | minimal | low | medium | high | xhigh | max
+temperature = 1.0
+input_price = 1.4               # $/Mtok — utilisés pour le cost tracking pi
+output_price = 4.4
+cached_input_price = 0.14
+supports_images = false
+auto_compact_threshold = 300000 # seuil de compaction vibe, PAS la fenêtre réelle
+```
+
+Règles de reconnaissance :
+
+- **Backend mistral obligatoire** : seules les entrées `[[models]]` dont le
+  provider est `mistral` (ou un `[[providers]]` avec
+  `backend = "mistral"`) sont enregistrées. Les modèles sur un backend
+  `generic` (deepseek, scaleway, opencode-zen…) sont ignorés.
+- **`name` = identifiant** : c'est l'id pi (`pi -m mistral-vibe/<name>`) et la
+  valeur `model` envoyée à l'API Mistral. `alias` ne sert qu'à l'affichage.
+- **Doublons** : une entrée `[[models]]` de même `name` qu'un modèle intégré
+  du harness (ex. `mistral-vibe-cli-latest`) remplace celui-ci ; entre deux
+  entrées de la config, la première gagne.
+- **Clé API** : résolue comme vibe — variable d'env (par défaut
+  `MISTRAL_API_KEY`, cf. `api_key_env_var` du provider), puis `~/.vibe/.env`.
+- **Prix** : `input_price` / `output_price` / `cached_input_price` en USD par
+  Mtok ; à défaut, 0.
+- **Fenêtre de contexte** : `auto_compact_threshold` n'est **pas** la fenêtre
+  réelle — la vraie valeur vient de `KNOWN_MODEL_SPECS` (voir section
+  suivante), sinon repli sur `auto_compact_threshold` ou 200k. Surchargeable
+  via `models.json` de pi.
+- Après toute modification du toml : **`/reload`** dans pi (la config est
+  relue à chaque chargement de l'extension) et vérifier avec
+  `/mistral-vibe-status`.
 
 ## Contrat wire (ce que le provider envoie)
 
@@ -87,7 +139,7 @@ Différences volontaires avec le provider `mistral` natif de pi :
    et pricing sans toucher au code.
 3. Comparer le body/headers émis : hooks pi `before_provider_request` /
    `before_provider_headers`.
-4. Test réel : `pi -p "…" -m mistral-vibe/zai-glm-5-2` (consomme du crédit).
+4. Test réel : `pi -p "…" -m mistral-vibe/zai-glm-5-2` ou `zai-glm-5-3` (consomme du crédit).
 
 ## Fenêtre de contexte des modèles
 
@@ -99,6 +151,7 @@ la fenêtre réelle du modèle. L'extension utilise donc des specs connues
 | Modèle | Context window | Max output |
 |---|---|---|
 | zai-glm-5-2 | 1 000 000 | 128 000 |
+| zai-glm-5-3 | 1 000 000 | 128 000 |
 | mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
 
 Toute valeur reste surchargeable via `models.json` de pi
