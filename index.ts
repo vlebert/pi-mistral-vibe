@@ -29,6 +29,7 @@ const KNOWN_MODEL_SPECS: Record<
   { contextWindow: number; maxTokens: number }
 > = {
   "zai-glm-5-2": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.2 (Mistral-hosted)
+  "zai-glm-5-3": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.3 (Mistral-hosted)
   "mistral-vibe-cli-latest": { contextWindow: 262_144, maxTokens: 16_384 }, // mistral-medium-3.5
 };
 
