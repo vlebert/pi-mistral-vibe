@@ -14,13 +14,16 @@ import { appendFileSync } from "node:fs";
 import type {
   AssistantMessage,
   AssistantMessageEventStream,
-  Context,
   Model,
   SimpleStreamOptions,
+  TranscriptContext,
 } from "@earendil-works/pi-ai";
 import {
   calculateCost,
+  collapseSystemMessages,
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   parseStreamingJson,
 } from "@earendil-works/pi-ai";
 import {
@@ -80,7 +83,7 @@ type OutputMessage = AssistantMessage & {
 
 export function streamMistralVibe(
   model: Model<any>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions | undefined,
   runtime: VibeRuntime,
 ): AssistantMessageEventStream {
@@ -112,7 +115,18 @@ export function streamMistralVibe(
 
       const supportsImages = model.input.includes("image");
 
-      const transformed = transformMessages(context.messages, {
+      // pi 0.86+ passes a normalized TranscriptContext: the system prompt and
+      // tool declarations live in the transcript's system messages, not in
+      // context.systemPrompt / context.tools. Mistral chat completions carry
+      // the prompt in a leading system message and don't accept
+      // mid-conversation system messages, so collapse the transcript first,
+      // then resolve the current prompt and tool set from the replayed system
+      // message. (Without this, pi >= 0.86 sends no system prompt and no tools.)
+      const transcript = collapseSystemMessages(context);
+      const systemPrompt = getCurrentSystemPrompt(transcript.messages);
+      const tools = getCurrentTools(transcript.messages);
+
+      const transformed = transformMessages(transcript.messages, {
         provider: model.provider,
         api: model.api,
         modelId: model.id,
@@ -122,7 +136,7 @@ export function streamMistralVibe(
       const messages = toMistralMessages(
         transformed,
         supportsImages,
-        context.systemPrompt,
+        systemPrompt,
       );
 
       const maxTokens = Math.min(
@@ -139,7 +153,7 @@ export function streamMistralVibe(
         messages,
         temperature,
         maxTokens,
-        tools: context.tools,
+        tools,
         toolChoice: options?.toolChoice as
           | string
           | { name: string }
@@ -165,6 +179,8 @@ export function streamMistralVibe(
         x_affinity: payload.headers["x-affinity"] ?? null,
         prompt_cache_key: payload.body.prompt_cache_key ?? null,
         messageCount: (payload.body.messages as unknown[])?.length,
+        toolCount: (payload.body.tools as unknown[] | undefined)?.length ?? 0,
+        systemPromptChars: systemPrompt.length,
       });
 
       const fetcher = options?.fetch ?? fetch;

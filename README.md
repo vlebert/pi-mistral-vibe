@@ -170,6 +170,14 @@ Toute valeur reste surchargeable via `models.json` de pi
 
 ## Dépannage
 
+- **Le modèle ne voit ni le system prompt ni les outils** (il répond comme un
+  chatbot nu, sans contexte pi) : régression de compatibilité avec pi 0.86.0,
+  qui est passé d'un `Context` (`systemPrompt` / `tools`) à un
+  `TranscriptContext` normalisé. Le provider lit désormais le prompt et les
+  outils via `collapseSystemMessages()` / `getCurrentSystemPrompt()` /
+  `getCurrentTools()` (voir `stream.ts`). Vérifier avec
+  `MISTRAL_VIBE_DEBUG=1` : `systemPromptChars` et `toolCount` doivent être > 0
+  dans le log `request`.
 - **`No API key ...`** : la clé doit être dans l'env ou `~/.vibe/.env`
   (variable `MISTRAL_API_KEY` — le `api_key_env_var` du provider config est
   respecté si tu l'as surchargé).
@@ -188,7 +196,16 @@ Repo git autonome : `~/.pi/agent/extensions/mistral-vibe/`.
   reasoning, transform de messages, parsing SSE. Testable isolément.
 - `vibe-config.ts` — lecture de `~/.vibe` (config.toml, .env, version).
 - `stream.ts` — `streamSimple` (fetch brut + parsing SSE + events pi).
+  Reçoit un `TranscriptContext` pi >= 0.86 et en extrait prompt système et
+  outils avant construction de la requête.
 - `index.ts` — chargement, `registerProvider`, commande de statut, handler
   d'overflow.
 
 Pas de dépendances npm (parser TOML minimal embarqué).
+
+## Compatibilité pi
+
+| pi | Contexte provider | État |
+|---|---|---|
+| < 0.86 | `Context` avec `systemPrompt` / `tools` | historique |
+| >= 0.86 | `TranscriptContext` (prompt + outils dans les messages système) | supporté |

@@ -19,6 +19,13 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
 - **Accumulation des tool calls par index** : Mistral/GLM ne fournit l'id que
   sur certains chunks — ne jamais créer un nouveau bloc par chunk (id absent →
   phantom), adopter id/name quand ils arrivent.
+- **Contexte provider = `TranscriptContext` (pi >= 0.86)** : `streamSimple`
+  reçoit un transcript normalisé ; `context.systemPrompt` et `context.tools`
+  **n'existent plus**. Le prompt et les outils vivent dans les messages
+  système du transcript : lire avec `collapseSystemMessages(context)` puis
+  `getCurrentSystemPrompt(...)` / `getCurrentTools(...)`. Sinon le modèle
+  reçoit une requête sans system prompt ni outils (régression 0.86.0,
+  corrigée dans `stream.ts`).
 - **Source de vérité du comportement** : le code local de vibe
   (`~/.local/share/uv/tools/mistral-vibe/lib/*/site-packages/vibe/`,
   surtout `core/llm/backend/mistral.py`, `utils/http.py`) et le SDK
@@ -62,7 +69,9 @@ l'utilisateur.
    - `MISTRAL_VIBE_DEBUG=1 pi -p …` puis inspecter `/tmp/mistral-vibe-debug.log`
      (event `request`) : `user-agent` vibe, `x-affinity` présent, `accept:
      text/event-stream`, `prompt_cache_key: null`, `reasoning_effort`/`temperature`
-     conformes au niveau demandé.
+     conformes au niveau demandé, `toolCount` > 0 et `systemPromptChars` > 0
+     (contexte bien transmis). Une clé invalide (`MISTRAL_API_KEY=x`) suffit pour
+     produire le log sans consommer de crédit.
    - Alternative : hooks pi `before_provider_headers` / `before_provider_request`.
    - Rejouer le builder `wire.ts` hors-ligne (tsx) : URL `${origin}/v1/chat/completions`,
      headers exacts, ThinkChunk rejoués, pas de `prompt_cache_key`.
