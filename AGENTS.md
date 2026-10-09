@@ -6,12 +6,7 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
 
 ## Règles
 
-- **Parité wire = invariant n°1.** Ne jamais envoyer de champ/header que vibe
-  n'envoie pas (en particulier : pas de `prompt_cache_key`, `reasoning_effort`
-  pour TOUS les modèles thinking, température forcée à 1.0 quand reasoning
-  actif, `x-affinity` toujours, `user-agent:
-  mistral-client-python/Mistral-Vibe/<version>`). Toute dérive doit être
-  documentée explicitement dans README.md.
+- **Parité wire = invariant n°1.** Ne jamais envoyer de champ/header que vibe n'envoie pas, et envoyer ce que vibe envoie (contrat vérifié sur vibe 2.26.0 + SDK mistralai 2.6.0) : bloc de télémétrie `metadata` dans le body, `max_tokens`/`tools`/`reasoning_effort` sérialisés `null` explicites quand non définis (OptionalNullable), pas de `prompt_cache_key`, `temperature` = valeur de la config vibe (plus de forçage 1.0 depuis vibe 2.26 — dérive volontaire uniquement pour `max_tokens` qui garde la valeur clampée pi pour protéger la fenêtre de contexte), `x-affinity` toujours, `user-agent: mistral-client-python/Mistral-Vibe/<version>`. Toute dérive doit être documentée explicitement dans README.md.
 - **Champs de messages en snake_case sur le wire** : on fait du fetch brut (pas
   de SDK) → les messages doivent porter `tool_calls`, `tool_call_id`,
   `image_url` (jamais camelCase) — sinon l'API Mistral répond 422
@@ -69,16 +64,18 @@ l'utilisateur.
    - `MISTRAL_VIBE_DEBUG=1 pi -p …` puis inspecter `/tmp/mistral-vibe-debug.log`
      (event `request`) : `user-agent` vibe, `x-affinity` présent, `accept:
      text/event-stream`, `prompt_cache_key: null`, `reasoning_effort`/`temperature`
-     conformes au niveau demandé, `toolCount` > 0 et `systemPromptChars` > 0
-     (contexte bien transmis). Une clé invalide (`MISTRAL_API_KEY=x`) suffit pour
-     produire le log sans consommer de crédit.
+     conformes au niveau demandé, `metadata_call_type: main_call`, `toolCount` > 0
+     et `systemPromptChars` > 0 (contexte bien transmis). Une clé invalide
+     (`MISTRAL_API_KEY=x`) suffit pour produire le log sans consommer de crédit.
    - Alternative : hooks pi `before_provider_headers` / `before_provider_request`.
-   - Rejouer le builder `wire.ts` hors-ligne (tsx) : URL `${origin}/v1/chat/completions`,
-     headers exacts, ThinkChunk rejoués, pas de `prompt_cache_key`.
+   - Rejouer le builder `wire.ts` hors-ligne (node, type stripping natif) : URL
+     `${origin}/v1/chat/completions`, headers exacts, ThinkChunk rejoués, pas de
+     `prompt_cache_key`, `max_tokens`/`tools`/`reasoning_effort` null quand non
+     définis, bloc `metadata` présent.
 3. **Thinking / reasoning** (crédit)
-   - `--model mistral-vibe/zai-glm-5-2:off` → log : `reasoning_effort` absent.
+   - `--model mistral-vibe/zai-glm-5-2:off` → log : `reasoning_effort: null` (null explicite, pas omis).
    - `:low` → `none` ; `:medium` (défaut pi) et `:high` → `high` ; `temperature`
-     forcée à 1.0 dès que `reasoning_effort` est envoyé.
+     = valeur de la config vibe (1.0 pour zai/large-4 ; vibe ne force plus depuis 2.26).
    - Prompt exigeant du raisonnement → event `thinking_delta` + `contentTypes`
      contenant `thinking` (une question triviale peut légitimement ne pas
      produire de thinking).

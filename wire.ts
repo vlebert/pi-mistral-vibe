@@ -3,16 +3,19 @@
  *
  * This module is deliberately dependency-free (no pi-ai imports) so the
  * request/header contract can be reasoned about and unit-tested in isolation.
- * The contract mirrors what the `mistral-vibe` harness (vibe/core/llm/backend/
- * mistral.py + the official `mistralai` Python SDK 2.6.0) sends to
+ * The contract mirrors what the `mistral-vibe` harness 2.26.0 (vibe/core/
+ * llm/backend/mistral.py + the official `mistralai` Python SDK 2.6.0) sends to
  * https://api.mistral.ai — including the User-Agent and x-affinity headers,
- * reasoning_effort mapping, temperature forcing and the absence of
+ * reasoning_effort mapping, the telemetry `metadata` body block, the explicit
+ * null `max_tokens` / `tools` / `reasoning_effort` fields and the absence of
  * prompt_cache_key in the body.
  */
 
+import { arch, platform, release } from "node:os";
+
 export const DEFAULT_BASE_URL = "https://api.mistral.ai/v1";
 /** Fallback when the installed vibe version cannot be read. */
-export const DEFAULT_VERSION = "2.24.1";
+export const DEFAULT_VERSION = "2.26.0";
 
 export interface WireRequest {
   url: string;
@@ -23,6 +26,46 @@ export interface WireRequest {
 /** vibe utils/http.py get_user_agent(backend="mistral"). */
 export function buildUserAgent(version: string): string {
   return `mistral-client-python/Mistral-Vibe/${version}`;
+}
+
+export interface VibeMetadataInput {
+  /** Installed vibe version (e.g. "2.26.0"). */
+  version: string;
+  /** Session id (also sent as x-affinity). */
+  sessionId?: string;
+  /** vibe call_type: "main_call" for agent turns, "secondary_call" for
+   *  utility completions (titles, compaction…). */
+  callType?: "main_call" | "secondary_call";
+}
+
+/**
+ * The telemetry `metadata` block vibe 2.26.0 puts in the chat-completions
+ * body (core/telemetry/build_metadata.py build_request_metadata +
+ * TelemetryRequestMetadata, CLI launch context: agent_entrypoint "cli",
+ * client_name "vibe_cli", call_source "vibe_code", host_kind "local").
+ * None-valued fields are omitted, mirroring vibe's
+ * `model_dump(exclude_none=True)`.
+ */
+export function buildVibeMetadata(input: VibeMetadataInput): Record<string, unknown> {
+  const osId =
+    platform() === "win32" ? "windows" : platform();
+  const archId = arch() === "x64" ? "x86_64" : arch();
+  const metadata: Record<string, unknown> = {
+    os: osId,
+    arch: archId,
+    version: input.version,
+    call_type: input.callType ?? "main_call",
+    call_source: "vibe_code",
+    host_kind: "local",
+    agent_entrypoint: "cli",
+    agent_version: input.version,
+    client_name: "vibe_cli",
+    client_version: input.version,
+  };
+  const osVersion = release();
+  if (osVersion) metadata.os_version = osVersion;
+  if (input.sessionId) metadata.session_id = input.sessionId;
+  return metadata;
 }
 
 export type ReasoningEffort = "none" | "high";
@@ -563,8 +606,12 @@ export interface BuildWireRequestInput {
   sessionId?: string;
   model: string;
   messages: MistralChatMessage[];
-  temperature?: number;
-  maxTokens?: number;
+  /** Always sent (vibe passes model.temperature from the config, no forcing). */
+  temperature: number;
+  /** vibe sends max_tokens: null unless --max-tokens is set. */
+  maxTokens?: number | null;
+  /** Telemetry block (buildVibeMetadata) — vibe always sends it. */
+  metadata?: Record<string, unknown>;
   tools?: Array<{
     name: string;
     description?: string;
@@ -575,14 +622,17 @@ export interface BuildWireRequestInput {
 }
 
 /**
- * Assembles the exact HTTP request vibe sends to Mistral:
+ * Assembles the exact HTTP request vibe 2.26.0 sends to Mistral:
  *  - URL: origin from api_base (version suffix stripped, like vibe's
  *    get_server_url_from_api_base) + /v1/chat/completions (the SDK path)
  *  - headers: authorization Bearer, content-type application/json,
  *    accept text/event-stream, user-agent mistral-client-python/Mistral-Vibe/<v>,
  *    x-affinity: <sessionId> (always, like vibe's _get_extra_headers)
- *  - body: stream true, temperature forced to 1.0 when reasoning_effort is set,
- *    NO prompt_cache_key (vibe does not send it)
+ *  - body mirrors the SDK's ChatCompletionStreamRequest serialization:
+ *    stream true, telemetry metadata block, and explicitly null
+ *    max_tokens / tools / reasoning_effort when unset (the SDK serializes
+ *    OptionalNullable None as null, not omitted). NO prompt_cache_key (vibe
+ *    does not send it). tool_choice is omitted when unset (SDK Optional).
  */
 export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
   const origin = input.baseUrl.replace(/(\/v\d+).*$/, "");
@@ -596,25 +646,27 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
   };
   if (input.sessionId) headers["x-affinity"] = input.sessionId;
 
+  const hasTools = input.tools !== undefined && input.tools.length > 0;
   const body: Record<string, unknown> = {
     model: input.model,
-    stream: true,
     messages: input.messages,
+    temperature: input.temperature,
+    max_tokens: input.maxTokens ?? null,
+    stream: true,
+    metadata: input.metadata ?? {},
+    tools: hasTools
+      ? input.tools!.map((tool) => ({
+          type: "function",
+          function: {
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            parameters: tool.parameters,
+          },
+        }))
+      : null,
+    reasoning_effort: input.reasoningEffort ?? null,
   };
-  if (input.temperature !== undefined) body.temperature = input.temperature;
-  if (input.maxTokens !== undefined) body.max_tokens = input.maxTokens;
-  if (input.tools !== undefined && input.tools.length > 0) {
-    body.tools = input.tools.map((tool) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
-        parameters: tool.parameters,
-      },
-    }));
-  }
   if (input.toolChoice) body.tool_choice = mapToolChoice(input.toolChoice);
-  if (input.reasoningEffort) body.reasoning_effort = input.reasoningEffort;
 
   return { url, headers, body };
 }

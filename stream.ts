@@ -2,11 +2,14 @@
  * streamSimple implementation for the mistral-vibe provider.
  *
  * Replicates the wire behavior of the `mistral-vibe` harness MistralBackend
- * (vibe/core/llm/backend/mistral.py) on top of pi's streaming contract:
+ * (vibe 2.26.0, vibe/core/llm/backend/mistral.py) on top of pi's streaming
+ * contract:
  *  - raw fetch (no SDK) with the exact vibe headers, including User-Agent and
  *    x-affinity
- *  - reasoning_effort for every thinking model (none/high), temperature forced
- *    to 1.0 whenever reasoning is active
+ *  - reasoning_effort for every thinking model (none/high), temperature sent
+ *    as-is from the vibe config (vibe 2.26 no longer forces 1.0)
+ *  - telemetry metadata block + explicit null max_tokens/tools/reasoning_effort
+ *    (SDK OptionalNullable serialization)
  *  - SSE parsing of Mistral chat-completions chunks (ThinkChunk content,
  *    tool calls, trailing usage-only chunk, cached tokens)
  */
@@ -27,6 +30,7 @@ import {
   parseStreamingJson,
 } from "@earendil-works/pi-ai";
 import {
+  buildVibeMetadata,
   buildWireRequest,
   mapThinkingToReasoningEffort,
   parseMistralSse,
@@ -107,11 +111,13 @@ export function streamMistralVibe(
       // undefined means the user chose off — never fall back to a default.
       const reasoningLevel = options?.reasoning ?? "off";
       const reasoningEffort = mapThinkingToReasoningEffort(reasoningLevel);
-      // vibe forces temperature=1.0 whenever reasoning is active.
-      const temperature =
-        reasoningEffort !== undefined
-          ? 1.0
-          : (options?.temperature ?? 1.0);
+      // vibe 2.26.0 sends the model's config temperature as-is (no more
+      // forcing to 1.0 when reasoning is active). pi's explicit
+      // options.temperature wins when set, then the vibe config entry, then
+      // vibe's ModelConfig default (0.2).
+      const configTemperature = [...runtime.models, ...runtime.defaultModels]
+        .find((m) => m.name === model.id)?.temperature;
+      const temperature = options?.temperature ?? configTemperature ?? 0.2;
 
       const supportsImages = model.input.includes("image");
 
@@ -144,6 +150,14 @@ export function streamMistralVibe(
         model.maxTokens,
       );
 
+      // vibe 2.26.0 always sends a telemetry metadata block in the body
+      // (build_request_metadata; CLI launch context), with the session id
+      // also used for x-affinity.
+      const metadata = buildVibeMetadata({
+        version: runtime.version,
+        sessionId: options?.sessionId,
+      });
+
       let payload = buildWireRequest({
         baseUrl: model.baseUrl || runtime.baseUrl,
         apiKey,
@@ -153,6 +167,7 @@ export function streamMistralVibe(
         messages,
         temperature,
         maxTokens,
+        metadata,
         tools,
         toolChoice: options?.toolChoice as
           | string
@@ -176,6 +191,7 @@ export function streamMistralVibe(
         reasoningLevel,
         temperature: payload.body.temperature,
         max_tokens: payload.body.max_tokens,
+        metadata_call_type: (payload.body.metadata as Record<string, unknown>)?.call_type ?? null,
         x_affinity: payload.headers["x-affinity"] ?? null,
         prompt_cache_key: payload.body.prompt_cache_key ?? null,
         messageCount: (payload.body.messages as unknown[])?.length,

@@ -16,6 +16,7 @@ chargement.
 
 ```bash
 pi -m mistral-vibe/mistral-vibe-cli-latest   # défaut harness (= mistral-medium-3.5)
+pi -m mistral-vibe/mistral-large-4-0        # Mistral Large 4
 pi -m mistral-vibe/zai-glm-5-2               # modèle de ta config vibe
 pi -m mistral-vibe/zai-glm-5-3               # modèle de ta config vibe
 
@@ -107,23 +108,34 @@ user-agent: mistral-client-python/Mistral-Vibe/<version>
 x-affinity: <session_id>
 ```
 
-Body :
+Body (mirroir de la sérialisation SDK `mistralai` 2.6.0 / vibe 2.26.0) :
 
 - `model`, `messages` (ThinkChunk rejoués pour le multi-tour ; champs en
   **snake_case** : `tool_calls`, `tool_call_id`, `image_url` — fetch brut sans
   SDK), `stream: true`
 - `reasoning_effort`: `none` (minimal/low) / `high` (medium/high/xhigh/max),
-  **omis** si thinking `off` — pour **tous** les modèles (comme vibe)
-- `temperature`: forcée à **1.0** dès que `reasoning_effort` est envoyé
-- `max_tokens`, `tools`, `tool_choice`
+  et **`null` explicite** si thinking `off` — pour **tous** les modèles (le SDK
+  sérialise les OptionalNullable `None` comme `null`, pas comme champ omis)
+- `temperature`: **toujours envoyée** avec la valeur de la config vibe
+  (`[[models]] temperature`) — vibe 2.26 ne force plus 1.0 quand le reasoning
+  est actif ; repli : options pi explicites, sinon défaut `ModelConfig` 0.2
+- `metadata`: bloc de télémétrie vibe (os, arch, os_version, version,
+  session_id, call_type `main_call`, call_source `vibe_code`, host_kind
+  `local`, agent_entrypoint `cli`, client_name `vibe_cli`…)
+- `max_tokens`: la valeur pi (clampée à la fenêtre de contexte) — **dérive
+  volontaire** : vibe envoie `null` par défaut, mais pi s'en sert pour
+  protéger la fenêtre de contexte
+- `tools`: tableau, ou **`null` explicite** quand il n'y a pas d'outils ;
+  `tool_choice` omis quand non défini
 - **pas de** `prompt_cache_key` (vibe ne l'envoie pas)
 
 Différences volontaires avec le provider `mistral` natif de pi :
 
 | | `mistral` (pi natif) | `mistral-vibe` |
 |---|---|---|
-| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (none/high) |
-| `temperature` | non forcée | forcée à 1.0 si reasoning |
+| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (none/high/null) |
+| `temperature` | non gérée | valeur de la config vibe |
+| `metadata` | non envoyé | bloc télémétrie vibe |
 | `prompt_cache_key` | envoyé si cache retention | jamais |
 | `x-affinity` | si cache retention | toujours (comme vibe) |
 | User-Agent | SDK pi | `mistral-client-python/Mistral-Vibe/<version>` |
@@ -152,18 +164,26 @@ la fenêtre réelle du modèle. L'extension utilise donc des specs connues
 |---|---|---|
 | zai-glm-5-2 | 1 000 000 | 128 000 |
 | zai-glm-5-3 | 1 000 000 | 128 000 |
+| mistral-large-4-0 | 1 048 576 | 262 144 |
 | mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
 
 Toute valeur reste surchargeable via `models.json` de pi
 (`mistral-vibe/<id>.contextWindow` / `maxTokens`).
 
+| Modèle | Context window | Max output |
+|---|---|---|
+| zai-glm-5-2 | 1 000 000 | 128 000 |
+| zai-glm-5-3 | 1 000 000 | 128 000 |
+| mistral-large-4-0 | 1 048 576 | 262 144 |
+| mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
+
 ## Thinking
 
 - Niveau par défaut pi : `medium` → `reasoning_effort: "high"` envoyé (comme la
-  config vibe `thinking = "high"` de zai). `:low` → `"none"`, `:off` → champ
-  omis.
-- Température forcée à 1.0 dès que `reasoning_effort` est envoyé (comportement
-  vibe).
+  config vibe `thinking = "high"` de zai). `:low` → `"none"`, `:off` →
+  `reasoning_effort: null` (null explicite, comme le SDK vibe).
+- La température envoyée est celle de la config vibe (1.0 pour zai/large-4) —
+  vibe 2.26 ne la force plus à 1.0 quand le reasoning est actif.
 - Le modèle peut légitimement ne pas émettre de thinking sur une question
   triviale (GLM 5.2 décide) ; `contentTypes` du log montre
   `["text","thinking","text"]` quand il raisonne.
