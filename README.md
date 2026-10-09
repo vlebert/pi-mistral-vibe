@@ -44,6 +44,20 @@ Seuls les modèles du **backend mistral** sont enregistrés (les modèles
 deepseek/llamacpp de la config sont ignorés). Les entrées de la config
 remportent sur les défauts du harness en cas de doublon d'id.
 
+## Config locale de l'extension (`config.local.json`)
+
+Fichier gitignoré à côté de l'extension
+(`~/.pi/agent/extensions/mistral-vibe/config.local.json`), relu au
+`/reload`. JSON strict (pas de commentaires). Options :
+
+| Clé | Défaut | Effet |
+|---|---|---|
+| `sendTelemetryMetadata` | `true` | envoie le bloc de télémétrie `metadata` dans chaque requête. Parité wire — vibe l'envoie toujours, même avec `enable_telemetry = false` (ce réglage ne coupe que le canal d'événements séparé) — mais le bloc décrit le CLI vibe (`agent_entrypoint: "cli"`, `client_name: "vibe_cli"`) alors que pi n'est pas ce client. `false` = moins de fausse télémétrie, au prix d'une divergence wire visible (champ absent d'une requête vibe). |
+
+Override ponctuel sans toucher au fichier : `MISTRAL_VIBE_METADATA=off|on`
+(prime sur le fichier). Le réglage effectif est visible dans
+`/mistral-vibe-status` (ligne `telemetry block`).
+
 ## Configurer un modèle dans Mistral Vibe (`~/.vibe/config.toml`)
 
 Pour qu'un modèle soit proposé par le plugin, il doit avoir une entrée
@@ -121,7 +135,9 @@ Body (mirroir de la sérialisation SDK `mistralai` 2.6.0 / vibe 2.26.0) :
   est actif ; repli : options pi explicites, sinon défaut `ModelConfig` 0.2
 - `metadata`: bloc de télémétrie vibe (os, arch, os_version, version,
   session_id, call_type `main_call`, call_source `vibe_code`, host_kind
-  `local`, agent_entrypoint `cli`, client_name `vibe_cli`…)
+  `local`, agent_entrypoint `cli`, client_name `vibe_cli`…) — désactivable via
+  `config.local.json` (`sendTelemetryMetadata: false`, divergence documentée ;
+  vibe l'envoie inconditionnellement, même avec `enable_telemetry = false`)
 - `max_tokens`: la valeur pi (clampée à la fenêtre de contexte) — **dérive
   volontaire** : vibe envoie `null` par défaut, mais pi s'en sert pour
   protéger la fenêtre de contexte

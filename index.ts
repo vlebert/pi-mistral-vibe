@@ -153,6 +153,11 @@ function describeRuntime(
   lines.push(`  base URL        : ${runtime.baseUrl}`);
   lines.push(`  User-Agent      : ${runtime.userAgent}`);
   lines.push(`  api key env var : ${runtime.apiKeyEnvVar} (env, then ~/.vibe/.env)`);
+  lines.push(
+    `  telemetry block : ${
+      runtime.options.sendTelemetryMetadata ?? true ? "on" : "off"
+    } (config.local.json sendTelemetryMetadata; env MISTRAL_VIBE_METADATA overrides)`,
+  );
   for (const warning of runtime.warnings) {
     lines.push(`  warning         : ${warning}`);
   }

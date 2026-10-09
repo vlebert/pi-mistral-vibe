@@ -29,12 +29,16 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
   HTTP. Ne pas y introduire de dépendance.
 - **Config** : `~/.vibe/config.toml` (modèles/providers) et `~/.vibe/.env`
   (clé API) sont lus au chargement ; `/reload` dans pi relit tout. Ne jamais
-  committer de clé API ni de secrets.
+  committer de clé API ni de secrets. Options propres à l'extension dans
+  `config.local.json` (gitignoré, à côté des sources, JSON strict) : notamment
+  `sendTelemetryMetadata` (bloc télémétrie on/off, env `MISTRAL_VIBE_METADATA`
+  en override ponctuel).
 - **Seuls les modèles du backend mistral** de la config vibe sont enregistrés
   (pas deepseek/llamacpp).
 - **Fichiers** : `index.ts` (entrée), `stream.ts` (streamSimple),
   `vibe-config.ts` (lecture config), `wire.ts` (contrat pur), `README.md`,
-  `AGENTS.md`/`CLAUDE.md`.
+  `AGENTS.md`/`CLAUDE.md`, `config.local.json` (options locales, gitignoré,
+  jamais commité).
 - **Tests/validation** : voir la section « Tests manuels » ci-dessous. Un test
   réel consomme du crédit API → demander l'accord de l'utilisateur avant.
 

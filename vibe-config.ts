@@ -12,7 +12,8 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_BASE_URL,
   DEFAULT_VERSION,
@@ -21,6 +22,16 @@ import {
   parseTomlSubset,
   type TomlDoc,
 } from "./wire.js";
+
+/** Extension-level options (config.local.json next to this file,
+ *  gitignored). Reloading (/reload) re-reads them. */
+export interface VibeExtensionOptions {
+  /** Send the vibe telemetry metadata block in request bodies (default
+   *  true — wire parity; vibe sends it even with enable_telemetry = false).
+   *  The block carries fabricated client-identity fields, so it can be
+   *  turned off here. */
+  sendTelemetryMetadata?: boolean;
+}
 
 export interface VibeProviderConfig {
   name: string;
@@ -51,6 +62,7 @@ export interface VibeRuntime {
   providers: VibeProviderConfig[];
   models: VibeModelConfig[]; // config.toml [[models]] on the mistral backend
   defaultModels: VibeModelConfig[]; // harness DEFAULT_MODELS
+  options: VibeExtensionOptions; // config.local.json (extension options)
   warnings: string[];
 }
 
@@ -137,6 +149,39 @@ export function harnessDefaultModels(): VibeModelConfig[] {
   ];
 }
 
+/** Read the extension's own options from config.local.json (next to this
+ *  file). Absent file falls back to defaults; malformed JSON is ignored with a
+ *  warning. The file is gitignored so per-machine settings never land in the
+ *  repo. */
+export function loadExtensionOptions(): {
+  options: VibeExtensionOptions;
+  warning?: string;
+} {
+  let configPath: string;
+  try {
+    configPath = join(dirname(fileURLToPath(import.meta.url)), "config.local.json");
+  } catch {
+    return { options: {} };
+  }
+  if (!existsSync(configPath)) return { options: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    if (parsed && typeof parsed === "object") {
+      const options: VibeExtensionOptions = {};
+      if (typeof parsed.sendTelemetryMetadata === "boolean") {
+        options.sendTelemetryMetadata = parsed.sendTelemetryMetadata;
+      }
+      return { options };
+    }
+    return { options: {} };
+  } catch {
+    return {
+      options: {},
+      warning: `config.local.json is not valid JSON (${configPath}); using defaults`,
+    };
+  }
+}
+
 /**
  * Resolve the API key the way vibe does: env var first, then the key vibe
  * persisted in ~/.vibe/.env. Returns undefined when nothing is found.
@@ -159,6 +204,8 @@ export function loadVibeRuntime(): VibeRuntime {
   const doc = readVibeConfigToml(dir);
   const version = findInstalledVibeVersion() ?? DEFAULT_VERSION;
   const userAgent = buildUserAgent(version);
+  const { options, warning: optionsWarning } = loadExtensionOptions();
+  if (optionsWarning) warnings.push(optionsWarning);
 
   const providers: VibeProviderConfig[] = [];
   const configModels: VibeModelConfig[] = [];
@@ -242,6 +289,7 @@ export function loadVibeRuntime(): VibeRuntime {
     providers,
     models: mistralBackendModels,
     defaultModels,
+    options,
     warnings,
   };
 }

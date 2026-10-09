@@ -39,6 +39,29 @@ export interface VibeMetadataInput {
 }
 
 /**
+ * Whether the telemetry metadata block should be sent. Wire parity says yes:
+ * vibe sends it unconditionally (even with `enable_telemetry = false`, which
+ * only gates the separate telemetry-events channel). But the block carries
+ * fabricated client identity fields (agent_entrypoint "cli",
+ * client_name "vibe_cli") when pi is not the vibe CLI, so it can be turned
+ * off in the extension's config.local.json (`sendTelemetryMetadata: false`,
+ * re-read on /reload). Precedence: MISTRAL_VIBE_METADATA env var ("0"/"false"/
+ * "off"/"no" to disable, "1"/"true"/"on"/"yes" to force-enable) >
+ * config.local.json > default true. Turning it off is a documented, deliberate
+ * wire divergence: the request then lacks a field every vibe request carries.
+ */
+export function vibeMetadataEnabled(
+  env: Record<string, string | undefined>,
+  configValue?: boolean,
+): boolean {
+  const raw = env.MISTRAL_VIBE_METADATA?.trim().toLowerCase();
+  if (raw !== undefined && raw !== "") {
+    return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+  }
+  return configValue ?? true;
+}
+
+/**
  * The telemetry `metadata` block vibe 2.26.0 puts in the chat-completions
  * body (core/telemetry/build_metadata.py build_request_metadata +
  * TelemetryRequestMetadata, CLI launch context: agent_entrypoint "cli",
@@ -610,7 +633,8 @@ export interface BuildWireRequestInput {
   temperature: number;
   /** vibe sends max_tokens: null unless --max-tokens is set. */
   maxTokens?: number | null;
-  /** Telemetry block (buildVibeMetadata) — vibe always sends it. */
+  /** Telemetry block (buildVibeMetadata) — vibe always sends it; omitted when
+   *  disabled via MISTRAL_VIBE_METADATA=off (documented divergence). */
   metadata?: Record<string, unknown>;
   tools?: Array<{
     name: string;
@@ -653,7 +677,6 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
     temperature: input.temperature,
     max_tokens: input.maxTokens ?? null,
     stream: true,
-    metadata: input.metadata ?? {},
     tools: hasTools
       ? input.tools!.map((tool) => ({
           type: "function",
@@ -666,6 +689,7 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
       : null,
     reasoning_effort: input.reasoningEffort ?? null,
   };
+  if (input.metadata) body.metadata = input.metadata;
   if (input.toolChoice) body.tool_choice = mapToolChoice(input.toolChoice);
 
   return { url, headers, body };

@@ -37,6 +37,7 @@ import {
   sanitizeSurrogates,
   toMistralMessages,
   transformMessages,
+  vibeMetadataEnabled,
   type PiContentBlock,
 } from "./wire.js";
 import {
@@ -152,11 +153,22 @@ export function streamMistralVibe(
 
       // vibe 2.26.0 always sends a telemetry metadata block in the body
       // (build_request_metadata; CLI launch context), with the session id
-      // also used for x-affinity.
-      const metadata = buildVibeMetadata({
-        version: runtime.version,
-        sessionId: options?.sessionId,
-      });
+      // also used for x-affinity. It carries fabricated client-identity
+      // fields (agent_entrypoint "cli", client_name "vibe_cli"), so it can
+      // be turned off in config.local.json (sendTelemetryMetadata: false,
+      // re-read on /reload) or with MISTRAL_VIBE_METADATA=off — at the cost of
+      // a visible wire divergence (vibe sends it even with
+      // enable_telemetry = false).
+      const sendMetadata = vibeMetadataEnabled(
+        process.env as Record<string, string | undefined>,
+        runtime.options.sendTelemetryMetadata,
+      );
+      const metadata = sendMetadata
+        ? buildVibeMetadata({
+            version: runtime.version,
+            sessionId: options?.sessionId,
+          })
+        : undefined;
 
       let payload = buildWireRequest({
         baseUrl: model.baseUrl || runtime.baseUrl,
@@ -191,7 +203,9 @@ export function streamMistralVibe(
         reasoningLevel,
         temperature: payload.body.temperature,
         max_tokens: payload.body.max_tokens,
-        metadata_call_type: (payload.body.metadata as Record<string, unknown>)?.call_type ?? null,
+        metadata_call_type:
+          (payload.body.metadata as Record<string, unknown> | undefined)?.call_type ?? null,
+        metadata_enabled: payload.body.metadata !== undefined,
         x_affinity: payload.headers["x-affinity"] ?? null,
         prompt_cache_key: payload.body.prompt_cache_key ?? null,
         messageCount: (payload.body.messages as unknown[])?.length,
