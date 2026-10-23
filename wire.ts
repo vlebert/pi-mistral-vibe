@@ -524,9 +524,11 @@ export function toMistralMessages(
         .map((item) => {
           if (item.type === "text")
             return { type: "text", text: sanitizeSurrogates(item.text ?? "") };
+          // vibe 3.x format: image_url is an object {"url": "data:..."} (snake_case),
+          // matching the SDK's ImageURLChunk serialization.
           return {
             type: "image_url",
-            image_url: `data:${item.mimeType};base64,${item.data}`,
+            image_url: { url: `data:${item.mimeType};base64,${item.data}` },
           };
         });
       if (parts.length > 0) {
@@ -585,23 +587,49 @@ export function toMistralMessages(
       continue;
     }
     if (msg.role === "toolResult") {
-      // Mistral's ToolMessage.content must be a plain string — the API
-      // rejects arrays (422 "Input should be a valid string"). vibe 3.x
-      // sends msg.content as a string too (MistralMapper.prepare_message,
-      // Role.tool). Images in tool results are therefore flattened to a
-      // text placeholder; the model that produced the image already saw it.
+      // vibe 3.x (mistralai_vibe_local_harness/vibe/adapters/mistral.py
+      // _message_payload) passes tool results with images as chunked content
+      // (list of blocks) — the API accepts arrays on tool messages when the
+      // image blocks use the correct snake_case `image_url: {"url": ...}`
+      // shape. Without images, content is a plain string (like vibe's _text).
       const content = msg.content ?? [];
+      const hasImages = supportsImages && content.some((p) => p.type === "image");
+      if (hasImages) {
+        const parts: unknown[] = [];
+        for (const part of content) {
+          if (part.type === "text") {
+            const text = sanitizeSurrogates(part.text ?? "");
+            if (text.trim().length > 0 || parts.length === 0) {
+              parts.push({ type: "text", text });
+            }
+          } else if (part.type === "image") {
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:${part.mimeType};base64,${part.data}` },
+            });
+          }
+        }
+        if (parts.length === 0) parts.push({ type: "text", text: "" });
+        result.push({
+          role: "tool",
+          tool_call_id: msg.toolCallId,
+          name: msg.toolName,
+          content: parts,
+        });
+        continue;
+      }
+      // No images (or model doesn't support them): plain string content.
       const textResult = content
         .filter((part) => part.type === "text")
         .map((part) =>
           part.type === "text" ? sanitizeSurrogates(part.text ?? "") : "",
         )
         .join("\n");
-      const hasImages = content.some((part) => part.type === "image");
+      const hadImages = content.some((part) => part.type === "image");
       const toolText = buildToolResultText(
         textResult,
-        hasImages,
-        false, // ToolMessage.content must be a string; images are flattened
+        hadImages,
+        supportsImages,
         msg.isError,
       );
       result.push({
@@ -628,23 +656,22 @@ function buildToolResultText(
   supportsImages: boolean,
   isError?: boolean,
 ): string {
-  // supportsImages=false here means "images cannot ride this message on the
-  // wire" — for tool messages, Mistral's ToolMessage.content must be a plain
-  // string, so images are always flattened to a placeholder regardless of
-  // the model's vision capability.
+  // Called only when images are NOT sent on the wire (model doesn't support
+  // images, or no images present). When the model supports images, tool
+  // results with images are sent as chunked content (see toMistralMessages).
   const trimmed = text.trim();
   const errorPrefix = isError ? "[tool error] " : "";
   if (trimmed.length > 0) {
     const imageSuffix =
       hasImages && !supportsImages
-        ? "\n[tool image omitted: not supported in tool messages]"
+        ? "\n[tool image omitted: model does not support images]"
         : "";
     return `${errorPrefix}${trimmed}${imageSuffix}`;
   }
   if (hasImages) {
     return isError
-      ? "[tool error] (image omitted: not supported in tool messages)"
-      : "(image omitted: not supported in tool messages)";
+      ? "[tool error] (image omitted: model does not support images)"
+      : "(image omitted: model does not support images)";
   }
   return isError ? "[tool error] (no tool output)" : "(no tool output)";
 }
