@@ -1,8 +1,11 @@
 /**
  * mistral-vibe — a pi provider that talks to the Mistral API exactly like the
- * `mistral-vibe` harness does (same headers, same reasoning behavior, same
- * models), reading its API key and model config from the local ~/.vibe
+ * `mistral-vibe` harness 3.0.2 does (same headers, same reasoning behavior,
+ * same models), reading its API key and model config from the local ~/.vibe
  * installation.
+ *
+ * Wire parity target: vibe 3.0.2 agent turns (mistralai_vibe_local_harness/
+ * vibe/adapters/mistral.py + mistralai Python SDK 2.6.0).
  *
  * Auto-discovered from ~/.pi/agent/extensions/mistral-vibe/index.ts.
  * `/reload` re-reads ~/.vibe/config.toml and ~/.vibe/.env.

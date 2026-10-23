@@ -111,6 +111,9 @@ Règles de reconnaissance :
 
 ## Contrat wire (ce que le provider envoie)
 
+Parité cible : **vibe 3.0.2** agent turns (`mistralai_vibe_local_harness/vibe/
+adapters/mistral.py` + SDK `mistralai` 2.6.0).
+
 Headers, par requête chat streaming :
 
 ```
@@ -118,43 +121,58 @@ POST {origin}/v1/chat/completions
 authorization: Bearer <key>
 content-type: application/json
 accept: text/event-stream
-user-agent: mistral-client-python/Mistral-Vibe/<version>
+user-agent: speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai
 x-affinity: <session_id>
 ```
 
-Body (mirroir de la sérialisation SDK `mistralai` 2.6.0 / vibe 2.26.0) :
+> **User-Agent** : vibe 3.x envoie le **User-Agent par défaut du SDK Mistral**
+> sur les appels agent (pas le UA vibe CLI). Le UA vibe
+> (`mistral-client-python/Mistral-Vibe/<version>`) n'est envoyé par vibe que
+> sur les completions utilitaires (titres, narration, probe).
+
+Body (mirroir de la sérialisation SDK `mistralai` 2.6.0 / vibe 3.0.2) :
 
 - `model`, `messages` (ThinkChunk rejoués pour le multi-tour ; champs en
   **snake_case** : `tool_calls`, `tool_call_id`, `image_url` — fetch brut sans
   SDK), `stream: true`
-- `reasoning_effort`: `none` (minimal/low) / `high` (medium/high/xhigh/max),
-  et **`null` explicite** si thinking `off` — pour **tous** les modèles (le SDK
-  sérialise les OptionalNullable `None` comme `null`, pas comme champ omis)
+- `reasoning_effort`: `none` (minimal/low) / `high` (medium/high/xhigh/max) ;
+  **champ omis** si thinking `off` (vibe 3.x n'envoie `"none"` pour `off` que
+  quand les `thinking_levels` du modèle sont curatés pour inclure `"off"` ;
+  pi ne connaît pas cette curation, donc omission — comme vibe sur un modèle
+  non curaté)
 - `temperature`: **toujours envoyée** avec la valeur de la config vibe
-  (`[[models]] temperature`) — vibe 2.26 ne force plus 1.0 quand le reasoning
-  est actif ; repli : options pi explicites, sinon défaut `ModelConfig` 0.2
+  (`[[models]] temperature`) ; repli : options pi explicites, sinon défaut
+  `ModelConfig` 0.2
 - `metadata`: bloc de télémétrie vibe (os, arch, os_version, version,
   session_id, call_type `main_call`, call_source `vibe_code`, host_kind
   `local`, agent_entrypoint `cli`, client_name `vibe_cli`…) — désactivable via
   `config.local.json` (`sendTelemetryMetadata: false`, divergence documentée ;
   vibe l'envoie inconditionnellement, même avec `enable_telemetry = false`)
 - `max_tokens`: la valeur pi (clampée à la fenêtre de contexte) — **dérive
-  volontaire** : vibe envoie `null` par défaut, mais pi s'en sert pour
-  protéger la fenêtre de contexte
-- `tools`: tableau, ou **`null` explicite** quand il n'y a pas d'outils ;
-  `tool_choice` omis quand non défini
+  volontaire** : vibe 3.x calcule un cap dynamique et omet le champ quand il
+  n'y en a pas, mais pi s'en sert pour protéger la fenêtre de contexte
+- `tools`: tableau quand il y a des outils, **`parallel_tool_calls: true`**
+  toujours envoyé avec (vibe 3.x) ; **champ omis** quand il n'y a pas d'outils
+  (vibe 3.x omet les champs unset, contrairement à vibe 2.26 qui envoyait
+  `null` explicite)
+- `top_p`: envoyé si configuré via `samplingParams` de pi
+  (`models.json` ou options de requête)
+- `reasoning_effort`, `tools`, `max_tokens`: **champs omis** quand unset
+  (vibe 3.x ne passe le kwarg au SDK que quand il a une valeur ; le SDK omet
+  les champs `UNSET` du JSON)
 - **pas de** `prompt_cache_key` (vibe ne l'envoie pas)
 
 Différences volontaires avec le provider `mistral` natif de pi :
 
 | | `mistral` (pi natif) | `mistral-vibe` |
 |---|---|---|
-| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (none/high/null) |
+| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (none/high, omis si off) |
 | `temperature` | non gérée | valeur de la config vibe |
 | `metadata` | non envoyé | bloc télémétrie vibe |
 | `prompt_cache_key` | envoyé si cache retention | jamais |
 | `x-affinity` | si cache retention | toujours (comme vibe) |
-| User-Agent | SDK pi | `mistral-client-python/Mistral-Vibe/<version>` |
+| User-Agent | SDK pi | SDK Mistral (`speakeasy-sdk/python …`) |
+| `parallel_tool_calls` | non envoyé | `true` quand tools présents |
 
 ## Vérification de la parité
 
@@ -197,9 +215,10 @@ Toute valeur reste surchargeable via `models.json` de pi
 
 - Niveau par défaut pi : `medium` → `reasoning_effort: "high"` envoyé (comme la
   config vibe `thinking = "high"` de zai). `:low` → `"none"`, `:off` →
-  `reasoning_effort: null` (null explicite, comme le SDK vibe).
+  **champ omis** (vibe 3.x omet `reasoning_effort` quand le niveau est `off`
+  et que les niveaux du modèle ne sont pas curatés).
 - La température envoyée est celle de la config vibe (1.0 pour zai/large-4) —
-  vibe 2.26 ne la force plus à 1.0 quand le reasoning est actif.
+  vibe 3.x ne force pas la température.
 - Le modèle peut légitimement ne pas émettre de thinking sur une question
   triviale (GLM 5.2 décide) ; `contentTypes` du log montre
   `["text","thinking","text"]` quand il raisonne.

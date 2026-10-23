@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_BASE_URL,
   DEFAULT_VERSION,
-  buildUserAgent,
+  MISTRAL_SDK_USER_AGENT,
   parseEnvFile,
   parseTomlSubset,
   type TomlDoc,
@@ -57,7 +57,9 @@ export interface VibeRuntime {
   vibeDir: string;
   baseUrl: string; // api_base from config, default https://api.mistral.ai/v1
   apiKeyEnvVar: string; // e.g. MISTRAL_API_KEY
-  userAgent: string; // mistral-client-python/Mistral-Vibe/<version>
+  /** User-Agent for agent-turn requests: the mistralai SDK default
+   *  (vibe 3.x sends this on agent turns, not the vibe CLI UA). */
+  userAgent: string;
   version: string;
   providers: VibeProviderConfig[];
   models: VibeModelConfig[]; // config.toml [[models]] on the mistral backend
@@ -203,7 +205,9 @@ export function loadVibeRuntime(): VibeRuntime {
   const dir = vibeDir();
   const doc = readVibeConfigToml(dir);
   const version = findInstalledVibeVersion() ?? DEFAULT_VERSION;
-  const userAgent = buildUserAgent(version);
+  // vibe 3.x agent turns carry the SDK's default User-Agent, not the vibe
+  // CLI UA (which is only sent on utility completions).
+  const userAgent = MISTRAL_SDK_USER_AGENT;
   const { options, warning: optionsWarning } = loadExtensionOptions();
   if (optionsWarning) warnings.push(optionsWarning);
 

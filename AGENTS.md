@@ -6,7 +6,15 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
 
 ## Règles
 
-- **Parité wire = invariant n°1.** Ne jamais envoyer de champ/header que vibe n'envoie pas, et envoyer ce que vibe envoie (contrat vérifié sur vibe 2.26.0 + SDK mistralai 2.6.0) : bloc de télémétrie `metadata` dans le body, `max_tokens`/`tools`/`reasoning_effort` sérialisés `null` explicites quand non définis (OptionalNullable), pas de `prompt_cache_key`, `temperature` = valeur de la config vibe (plus de forçage 1.0 depuis vibe 2.26 — dérive volontaire uniquement pour `max_tokens` qui garde la valeur clampée pi pour protéger la fenêtre de contexte), `x-affinity` toujours, `user-agent: mistral-client-python/Mistral-Vibe/<version>`. Toute dérive doit être documentée explicitement dans README.md.
+- **Parité wire = invariant n°1.** Ne jamais envoyer de champ/header que vibe n'envoie pas, et envoyer ce que vibe envoie (contrat vérifié sur **vibe 3.0.2** + SDK mistralai 2.6.0, adapter `mistralai_vibe_local_harness/vibe/adapters/mistral.py`) :
+  - bloc de télémétrie `metadata` dans le body
+  - `max_tokens`/`tools`/`reasoning_effort`/`top_p` **omis** quand non définis (vibe 3.x ne passe le kwarg au SDK que quand il a une valeur ; le SDK omet les champs `UNSET` — plus de `null` explicites comme en vibe 2.26)
+  - `parallel_tool_calls: true` quand tools présents
+  - pas de `prompt_cache_key`
+  - `temperature` = valeur de la config vibe (pas de forçage 1.0)
+  - `x-affinity` toujours (session id pi)
+  - `user-agent` = **SDK Mistral par défaut** (`speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai`) — vibe 3.x n'envoie le UA vibe CLI (`mistral-client-python/Mistral-Vibe/<version>`) que sur les completions utilitaires, pas sur les agent turns
+  - dérive volontaire documentée : `max_tokens` garde la valeur clampée pi pour protéger la fenêtre de contexte (vibe 3.x calcule un cap dynamique). Toute dérive doit être documentée explicitement dans README.md.
 - **Champs de messages en snake_case sur le wire** : on fait du fetch brut (pas
   de SDK) → les messages doivent porter `tool_calls`, `tool_call_id`,
   `image_url` (jamais camelCase) — sinon l'API Mistral répond 422
@@ -23,8 +31,10 @@ modèles), en lisant sa config depuis l'installation locale de vibe.
   corrigée dans `stream.ts`).
 - **Source de vérité du comportement** : le code local de vibe
   (`~/.local/share/uv/tools/mistral-vibe/lib/*/site-packages/vibe/`,
-  surtout `core/llm/backend/mistral.py`, `utils/http.py`) et le SDK
-  `mistralai`. Si le comportement de vibe change, le provider doit suivre.
+  surtout `mistralai_vibe_local_harness/vibe/adapters/mistral.py` pour les
+  agent turns, `vibe/core/llm/backend/mistral.py` pour le legacy,
+  `vibe/utils/http.py` pour `get_user_agent`) et le SDK `mistralai`. Si le
+  comportement de vibe change, le provider doit suivre.
 - **`wire.ts` reste sans import pi-ai** : c'est la couche testable du contrat
   HTTP. Ne pas y introduire de dépendance.
 - **Config** : `~/.vibe/config.toml` (modèles/providers) et `~/.vibe/.env`
@@ -62,24 +72,27 @@ l'utilisateur.
 1. **Chargement & enregistrement**
    - `pi -p "réponds OK" --model mistral-vibe/mistral-vibe-cli-latest` → réponse OK.
    - `/mistral-vibe-status` → baseUrl `https://api.mistral.ai/v1`, UA
-     `mistral-client-python/Mistral-Vibe/<version>`, modèles attendus
+     `speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai`, modèles attendus
      (cli-latest + ceux du TOML backend mistral), aucune warning.
 2. **Parité wire** (sans crédit)
    - `MISTRAL_VIBE_DEBUG=1 pi -p …` puis inspecter `/tmp/mistral-vibe-debug.log`
-     (event `request`) : `user-agent` vibe, `x-affinity` présent, `accept:
-     text/event-stream`, `prompt_cache_key: null`, `reasoning_effort`/`temperature`
-     conformes au niveau demandé, `metadata_call_type: main_call`, `toolCount` > 0
-     et `systemPromptChars` > 0 (contexte bien transmis). Une clé invalide
+     (event `request`) : `user-agent` = SDK Mistral (`speakeasy-sdk/python …`),
+     `x-affinity` présent, `accept: text/event-stream`, `prompt_cache_key: null`
+     (champ absent du body), `reasoning_effort`/`temperature` conformes au
+     niveau demandé, `metadata_call_type: main_call`, `toolCount` > 0 et
+     `systemPromptChars` > 0 (contexte bien transmis). Une clé invalide
      (`MISTRAL_API_KEY=x`) suffit pour produire le log sans consommer de crédit.
    - Alternative : hooks pi `before_provider_headers` / `before_provider_request`.
    - Rejouer le builder `wire.ts` hors-ligne (node, type stripping natif) : URL
      `${origin}/v1/chat/completions`, headers exacts, ThinkChunk rejoués, pas de
-     `prompt_cache_key`, `max_tokens`/`tools`/`reasoning_effort` null quand non
-     définis, bloc `metadata` présent.
+     `prompt_cache_key`, `max_tokens`/`tools`/`reasoning_effort` **absents**
+     (pas `null`) quand non définis, `parallel_tool_calls: true` quand tools,
+     bloc `metadata` présent.
 3. **Thinking / reasoning** (crédit)
-   - `--model mistral-vibe/zai-glm-5-2:off` → log : `reasoning_effort: null` (null explicite, pas omis).
+   - `--model mistral-vibe/zai-glm-5-2:off` → log : `reasoning_effort` **absent**
+     du body (champ omis, comme vibe 3.x sur un modèle non curaté).
    - `:low` → `none` ; `:medium` (défaut pi) et `:high` → `high` ; `temperature`
-     = valeur de la config vibe (1.0 pour zai/large-4 ; vibe ne force plus depuis 2.26).
+     = valeur de la config vibe (1.0 pour zai/large-4 ; vibe 3.x ne force pas).
    - Prompt exigeant du raisonnement → event `thinking_delta` + `contentTypes`
      contenant `thinking` (une question triviale peut légitimement ne pas
      produire de thinking).
@@ -102,5 +115,8 @@ l'utilisateur.
      vérifier `/mistral-vibe-status`. Retirer `MISTRAL_API_KEY` de `~/.vibe/.env`
      → erreur claire « No API key … ». L'env var doit primer sur le .env.
 9. **Régression wire après upgrade vibe**
-   - Après `uv tool upgrade mistral-vibe` : re-vérifier UA (version) et que le
-     contrat HTTP de vibe n'a pas changé (comparer `mistral.py`/`http.py`).
+   - Après `uv tool upgrade mistral-vibe` : re-vérifier le contrat HTTP de vibe
+     n'a pas changé (comparer `mistralai_vibe_local_harness/vibe/adapters/mistral.py`,
+     `vibe/utils/http.py`, et la version du SDK `mistralai` — le UA SDK dépend
+     de `mistralai/client/_version.py`). Mettre à jour `DEFAULT_VERSION`,
+     `MISTRAL_SDK_USER_AGENT` et les commentaires si besoin.

@@ -3,19 +3,27 @@
  *
  * This module is deliberately dependency-free (no pi-ai imports) so the
  * request/header contract can be reasoned about and unit-tested in isolation.
- * The contract mirrors what the `mistral-vibe` harness 2.26.0 (vibe/core/
- * llm/backend/mistral.py + the official `mistralai` Python SDK 2.6.0) sends to
- * https://api.mistral.ai — including the User-Agent and x-affinity headers,
- * reasoning_effort mapping, the telemetry `metadata` body block, the explicit
- * null `max_tokens` / `tools` / `reasoning_effort` fields and the absence of
- * prompt_cache_key in the body.
+ * The contract mirrors what the `mistral-vibe` harness 3.0.2 sends to
+ * https://api.mistral.ai via the official `mistralai` Python SDK 2.6.0:
+ *  - User-Agent is the SDK default (`speakeasy-sdk/python …`), NOT the vibe
+ *    UA — vibe 3.x only sends its own UA on utility completions (titles,
+ *    narration, probes), not on agent turns
+ *  - x-affinity header carries the session affinity id
+ *  - reasoning_effort mapping (low→none, medium/high/max→high; off omitted
+ *    unless the model's thinking_levels are curated to include "off")
+ *  - telemetry `metadata` body block
+ *  - unset fields (max_tokens / tools / reasoning_effort) are OMITTED, not
+ *    sent as explicit null (the SDK omits UNSET fields; vibe 3.x only passes
+ *    kwargs that have a value)
+ *  - parallel_tool_calls: true is sent when tools are present
+ *  - no prompt_cache_key in the body
  */
 
 import { arch, platform, release } from "node:os";
 
 export const DEFAULT_BASE_URL = "https://api.mistral.ai/v1";
 /** Fallback when the installed vibe version cannot be read. */
-export const DEFAULT_VERSION = "2.26.0";
+export const DEFAULT_VERSION = "3.0.2";
 
 export interface WireRequest {
   url: string;
@@ -23,13 +31,27 @@ export interface WireRequest {
   body: Record<string, unknown>;
 }
 
-/** vibe utils/http.py get_user_agent(backend="mistral"). */
+/**
+ * The User-Agent the `mistralai` Python SDK 2.6.0 sends by default (generated
+ * by Speakeasy). vibe 3.x agent-turn requests carry this UA, not the vibe CLI
+ * UA — vibe only overrides it on utility completions (title, narration, probe)
+ * via `extra_headers={"user-agent": get_user_agent(backend)}`.
+ * The value is a constant of the SDK version, independent of the vibe version.
+ */
+export const MISTRAL_SDK_USER_AGENT =
+  "speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai";
+
+/**
+ * vibe utils/http.py get_user_agent(backend="mistral") — still used by vibe
+ * for utility completions and telemetry, but NOT for agent-turn requests.
+ * Kept for reference / utility-call parity.
+ */
 export function buildUserAgent(version: string): string {
   return `mistral-client-python/Mistral-Vibe/${version}`;
 }
 
 export interface VibeMetadataInput {
-  /** Installed vibe version (e.g. "2.26.0"). */
+  /** Installed vibe version (e.g. "3.0.2"). */
   version: string;
   /** Session id (also sent as x-affinity). */
   sessionId?: string;
@@ -62,7 +84,7 @@ export function vibeMetadataEnabled(
 }
 
 /**
- * The telemetry `metadata` block vibe 2.26.0 puts in the chat-completions
+ * The telemetry `metadata` block vibe 3.0.2 puts in the chat-completions
  * body (core/telemetry/build_metadata.py build_request_metadata +
  * TelemetryRequestMetadata, CLI launch context: agent_entrypoint "cli",
  * client_name "vibe_cli", call_source "vibe_code", host_kind "local").
@@ -94,10 +116,19 @@ export function buildVibeMetadata(input: VibeMetadataInput): Record<string, unkn
 export type ReasoningEffort = "none" | "high";
 
 /**
- * vibe mapping (vibe/core/llm/backend/mistral.py _THINKING_TO_REASONING_EFFORT):
- * low -> "none", medium/high/max -> "high". "off" (and anything else) is
- * omitted from the request, exactly like vibe (reasoning_effort=None).
- * pi adds a "minimal" level; vibe has no equivalent, so it maps to "none".
+ * vibe 3.0.2 mapping (vibe/core/llm/backend/mistral.py
+ * _THINKING_TO_REASONING_EFFORT + mistralai_vibe_local_harness/vibe/adapters/
+ * mistral.py): low -> "none", medium/high/max -> "high".
+ *
+ * "off" is omitted here (undefined): vibe 3.x sends "none" for "off" only
+ * when the model's thinking_levels are curated to include "off" (e.g. the
+ * default mistral-vibe-cli-latest has thinking_levels=["off","high"]). pi
+ * does not know the model's curated levels, so we omit — matching vibe's
+ * behaviour for uncurated models.
+ *
+ * pi-specific levels: "minimal" maps to "none" (closest wire value below
+ * "low"), "xhigh" maps to "high" (vibe has no level between high and max;
+ * both map to "high" on the wire).
  */
 export function mapThinkingToReasoningEffort(
   level: string | undefined,
@@ -625,14 +656,21 @@ function buildToolResultText(
 export interface BuildWireRequestInput {
   baseUrl: string; // e.g. https://api.mistral.ai/v1 (as in vibe api_base)
   apiKey: string;
+  /** User-Agent header value. For agent turns, pass MISTRAL_SDK_USER_AGENT
+   *  (the SDK default vibe 3.x sends). For utility completions, pass
+   *  buildUserAgent(version) (the vibe CLI UA). */
   userAgent: string;
   sessionId?: string;
   model: string;
   messages: MistralChatMessage[];
   /** Always sent (vibe passes model.temperature from the config, no forcing). */
   temperature: number;
-  /** vibe sends max_tokens: null unless --max-tokens is set. */
+  /** vibe 3.x computes a dynamic output cap; omitted from the body when null
+   *  (the SDK omits UNSET fields — vibe only passes the kwarg when it has a
+   *  value). */
   maxTokens?: number | null;
+  /** vibe 3.x sends top_p when the model route has one configured. */
+  topP?: number | null;
   /** Telemetry block (buildVibeMetadata) — vibe always sends it; omitted when
    *  disabled via MISTRAL_VIBE_METADATA=off (documented divergence). */
   metadata?: Record<string, unknown>;
@@ -646,17 +684,23 @@ export interface BuildWireRequestInput {
 }
 
 /**
- * Assembles the exact HTTP request vibe 2.26.0 sends to Mistral:
+ * Assembles the HTTP request vibe 3.0.2 sends to Mistral on agent turns:
  *  - URL: origin from api_base (version suffix stripped, like vibe's
  *    get_server_url_from_api_base) + /v1/chat/completions (the SDK path)
- *  - headers: authorization Bearer, content-type application/json,
- *    accept text/event-stream, user-agent mistral-client-python/Mistral-Vibe/<v>,
- *    x-affinity: <sessionId> (always, like vibe's _get_extra_headers)
- *  - body mirrors the SDK's ChatCompletionStreamRequest serialization:
- *    stream true, telemetry metadata block, and explicitly null
- *    max_tokens / tools / reasoning_effort when unset (the SDK serializes
- *    OptionalNullable None as null, not omitted). NO prompt_cache_key (vibe
- *    does not send it). tool_choice is omitted when unset (SDK Optional).
+ *  - headers: Authorization Bearer, Content-Type application/json,
+ *    Accept text/event-stream, User-Agent = the mistralai SDK default
+ *    (speakeasy-sdk/python …, NOT the vibe CLI UA), x-affinity: <sessionId>
+ *  - body mirrors the SDK's ChatCompletionStreamRequest serialization as
+ *    driven by vibe 3.x's adapter (mistralai_vibe_local_harness/vibe/adapters/
+ *    mistral.py):
+ *    - stream: true (always, SDK adds it for stream_async)
+ *    - temperature always sent
+ *    - max_tokens / tools / reasoning_effort / top_p are OMITTED when unset
+ *      (vibe only passes the kwarg when it has a value; the SDK omits UNSET)
+ *    - parallel_tool_calls: true when tools are present
+ *    - telemetry metadata block (when enabled)
+ *    - NO prompt_cache_key (vibe does not send it)
+ *    - tool_choice is omitted when unset
  */
 export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
   const origin = input.baseUrl.replace(/(\/v\d+).*$/, "");
@@ -675,20 +719,28 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
     model: input.model,
     messages: input.messages,
     temperature: input.temperature,
-    max_tokens: input.maxTokens ?? null,
     stream: true,
-    tools: hasTools
-      ? input.tools!.map((tool) => ({
-          type: "function",
-          function: {
-            name: tool.name,
-            ...(tool.description ? { description: tool.description } : {}),
-            parameters: tool.parameters,
-          },
-        }))
-      : null,
-    reasoning_effort: input.reasoningEffort ?? null,
   };
+  // vibe 3.x omits these fields when unset (the adapter only passes the kwarg
+  // when it has a value, and the SDK omits UNSET fields from the JSON body).
+  if (input.maxTokens != null) body.max_tokens = input.maxTokens;
+  if (input.topP != null) body.top_p = input.topP;
+  if (hasTools) {
+    body.tools = input.tools!.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        parameters: tool.parameters,
+      },
+    }));
+    // vibe 3.x always sends parallel_tool_calls: true when tools are present
+    // (mistralai_vibe_local_harness/vibe/adapters/mistral.py:149).
+    body.parallel_tool_calls = true;
+  }
+  if (input.reasoningEffort !== undefined) {
+    body.reasoning_effort = input.reasoningEffort;
+  }
   if (input.metadata) body.metadata = input.metadata;
   if (input.toolChoice) body.tool_choice = mapToolChoice(input.toolChoice);
 
