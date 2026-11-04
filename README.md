@@ -111,8 +111,8 @@ Règles de reconnaissance :
 
 ## Contrat wire (ce que le provider envoie)
 
-Parité cible : **vibe 3.0.2** agent turns (`mistralai_vibe_local_harness/vibe/
-adapters/mistral.py` + SDK `mistralai` 2.6.0).
+Parité cible : **vibe 3.1.0** agent turns (`mistralai_vibe_local_harness/vibe/
+adapters/mistral.py` + SDK `mistralai` 3.5.0).
 
 Headers, par requête chat streaming :
 
@@ -121,57 +121,78 @@ POST {origin}/v1/chat/completions
 authorization: Bearer <key>
 content-type: application/json
 accept: text/event-stream
-user-agent: speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai
+user-agent: mistral-client-python/Mistral-Vibe/3.1.0
 x-affinity: <session_id>
 ```
 
-> **User-Agent** : vibe 3.x envoie le **User-Agent par défaut du SDK Mistral**
-> sur les appels agent (pas le UA vibe CLI). Le UA vibe
-> (`mistral-client-python/Mistral-Vibe/<version>`) n'est envoyé par vibe que
-> sur les completions utilitaires (titres, narration, probe).
+> **User-Agent** : depuis vibe 3.1.0, les appels agent envoient le **UA vibe
+> CLI** (`mistral-client-python/Mistral-Vibe/<version>`) : vibe l'injecte dans
+> chaque requête via `extra_headers=with_user_agent(...)` → `request_headers()`
+> → `http_headers` du SDK, et Speakeasy applique les `http_headers` par requête
+> **après** l'UA par défaut du SDK (`basesdk.py`), donc il l'écrase. (En
+> vibe 3.0.x c'était l'inverse : UA SDK `speakeasy-sdk/python …` sur les agent
+> turns.)
 
-Body (mirroir de la sérialisation SDK `mistralai` 2.6.0 / vibe 3.0.2) :
+Body (mirroir de la sérialisation SDK `mistralai` 3.5.0 / vibe 3.1.0) :
 
 - `model`, `messages` (ThinkChunk rejoués pour le multi-tour ; champs en
   **snake_case** : `tool_calls`, `tool_call_id`, `image_url` — fetch brut sans
   SDK), `stream: true`
-- `reasoning_effort`: `none` (minimal/low) / `high` (medium/high/xhigh/max) ;
-  **champ omis** si thinking `off` (vibe 3.x n'envoie `"none"` pour `off` que
-  quand les `thinking_levels` du modèle sont curatés pour inclure `"off"` ;
-  pi ne connaît pas cette curation, donc omission — comme vibe sur un modèle
-  non curaté)
+- messages assistant rejoués, sérialisés comme le SDK 3.5.0 : `content`
+  explicite `null` quand il n'y a que des tool calls, `prefix: false` toujours
+  présent, et chaque `tool_calls[]` porte `index` (défaut SDK `0`, l'adapter
+  vibe ne le renseigne pas). Forme du `content` (cf. `_message_payload` de
+  vibe) : texte seul → **string** (blocs joints par `\n\n`) ; avec reasoning
+  → tableau des thinking chunks puis **un seul** text chunk joint. Les messages
+  user texte partent aussi en string (les images forcent le tableau)
+- `reasoning_effort`: le niveau est envoyé **tel quel** — `low`→`"low"`,
+  `medium`→`"medium"`, `high`→`"high"`, `xhigh`→`"xhigh"`, `max`→`"max"`
+  (`REASONING_WIRE_VALUES[MISTRAL]` = identité depuis vibe 3.1.0 ; la réduction
+  none/high de la 3.0.x n'existe plus). `minimal` (niveau pi seul) → `"low"`.
+  `off` → `"none"` **seulement si le modèle est curaté** (levels connues dans
+  `KNOWN_MODEL_SPECS`, tirées de known_models.py de vibe 3.1.0 : cli-latest
+  `["high"]`, large-4 et glm-5-3 `["low","high","max"]`), sinon **champ omis**
+  (vibe omet le champ pour `off` quand le support reasoning du modèle est
+  inconnu)
 - `temperature`: **toujours envoyée** avec la valeur de la config vibe
   (`[[models]] temperature`) ; repli : options pi explicites, sinon défaut
   `ModelConfig` 0.2
-- `metadata`: bloc de télémétrie vibe (os, arch, os_version, version,
-  session_id, call_type `main_call`, call_source `vibe_code`, host_kind
-  `local`, agent_entrypoint `cli`, client_name `vibe_cli`…) — désactivable via
+- `metadata`: bloc de télémétrie vibe (os, arch, os_version — `VERSION_ID` de
+  `/etc/os-release` sur Linux, sinon release du noyau —, version, session_id,
+  terminal_emulator — `unknown` si indétectable, call_type
+  `main_call`, call_source `vibe_code`, host_kind `local`, agent_entrypoint
+  `cli`, client_name `vibe_cli`…) — désactivable via
   `config.local.json` (`sendTelemetryMetadata: false`, divergence documentée ;
-  vibe l'envoie inconditionnellement, même avec `enable_telemetry = false`)
+  vibe l'envoie inconditionnellement, même avec `enable_telemetry = false`).
+  `message_id` (ajouté par vibe 3.1) est **omis** : pi n'expose pas d'id de
+  message utilisateur au niveau du stream (écart documenté)
 - `max_tokens`: la valeur pi (clampée à la fenêtre de contexte) — **dérive
-  volontaire** : vibe 3.x calcule un cap dynamique et omet le champ quand il
-  n'y en a pas, mais pi s'en sert pour protéger la fenêtre de contexte
+  volontaire** : vibe 3.1.0 omet le champ sur les agent turns quand aucun cap
+  n'est configuré (`output_token_cap()` → None), mais pi s'en sert pour
+  protéger la fenêtre de contexte
 - `tools`: tableau quand il y a des outils, **`parallel_tool_calls: true`**
-  toujours envoyé avec (vibe 3.x) ; **champ omis** quand il n'y a pas d'outils
+  toujours envoyé avec (vibe 3.1.x) ; **champ omis** quand il n'y a pas d'outils
   (vibe 3.x omet les champs unset, contrairement à vibe 2.26 qui envoyait
   `null` explicite)
-- `top_p`: envoyé si configuré via `samplingParams` de pi
-  (`models.json` ou options de requête)
-- `reasoning_effort`, `tools`, `max_tokens`: **champs omis** quand unset
-  (vibe 3.x ne passe le kwarg au SDK que quand il a une valeur ; le SDK omet
-  les champs `UNSET` du JSON)
+- `top_p`: envoyé avec la valeur `[[models]] top_p` de la config vibe, ou
+  l'override `samplingParams` de pi (`models.json` ou options de requête)
+- **pas de `tool_choice`** : vibe ne passe jamais ce kwarg sur les agent turns
+- champs unset : le builder `wire.ts` les omet (`max_tokens`, `tools`,
+  `reasoning_effort`, `top_p`), comme vibe (le SDK omet les `UNSET`) —
+  **exception côté provider** : `max_tokens` est toujours envoyé (dérive
+  volontaire documentée ci-dessus)
 - **pas de** `prompt_cache_key` (vibe ne l'envoie pas)
 
 Différences volontaires avec le provider `mistral` natif de pi :
 
 | | `mistral` (pi natif) | `mistral-vibe` |
 |---|---|---|
-| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (none/high, omis si off) |
+| `reasoning_effort` | seulement pour 3 ids de modèles, sinon `prompt_mode` | **tous** les modèles (niveau tel quel, `none` pour off si curaté, omis sinon) |
 | `temperature` | non gérée | valeur de la config vibe |
 | `metadata` | non envoyé | bloc télémétrie vibe |
 | `prompt_cache_key` | envoyé si cache retention | jamais |
 | `x-affinity` | si cache retention | toujours (comme vibe) |
-| User-Agent | SDK pi | SDK Mistral (`speakeasy-sdk/python …`) |
+| User-Agent | SDK pi | UA vibe CLI (`mistral-client-python/Mistral-Vibe/<version>`, comme vibe 3.1.0) |
 | `parallel_tool_calls` | non envoyé | `true` quand tools présents |
 
 ## Vérification de la parité
@@ -187,6 +208,11 @@ Différences volontaires avec le provider `mistral` natif de pi :
    `before_provider_headers`.
 4. Test réel : `pi -p "…" -m mistral-vibe/zai-glm-5-2` ou `zai-glm-5-3` (consomme du crédit).
 
+> Note plateforme : le `fetch` de Node (undici) ajoute `accept-language` et
+> `sec-fetch-mode: cors` à toute requête, absents de celles de vibe (httpx).
+> Sans effet côté API Mistral ; les supprimer demanderait de quitter `fetch`
+> pour `node:http`.
+
 ## Fenêtre de contexte des modèles
 
 La config vibe (`auto_compact_threshold`) est un **seuil d'auto-compaction**, pas
@@ -196,27 +222,26 @@ la fenêtre réelle du modèle. L'extension utilise donc des specs connues
 
 | Modèle | Context window | Max output |
 |---|---|---|
-| zai-glm-5-2 | 1 000 000 | 128 000 |
-| zai-glm-5-3 | 1 000 000 | 128 000 |
-| mistral-large-4-0 | 1 048 576 | 262 144 |
+| zai-glm-5-2 | 1 048 576 | 128 000 |
+| zai-glm-5-3 | 1 048 576 | 128 000 |
+| zai-glm-5-3-flash | 1 048 576 | 128 000 |
+| deepseek-v4-1-flash-1017 | 1 048 576 | 128 000 |
+| mistral-large-4 / mistral-large-4-0 | 1 048 576 | 262 144 |
+| mistral-medium-latest | 262 144 | 16 384 |
 | mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
 
 Toute valeur reste surchargeable via `models.json` de pi
 (`mistral-vibe/<id>.contextWindow` / `maxTokens`).
 
-| Modèle | Context window | Max output |
-|---|---|---|
-| zai-glm-5-2 | 1 000 000 | 128 000 |
-| zai-glm-5-3 | 1 000 000 | 128 000 |
-| mistral-large-4-0 | 1 048 576 | 262 144 |
-| mistral-vibe-cli-latest (medium-3.5) | 262 144 | 16 384 |
-
 ## Thinking
 
-- Niveau par défaut pi : `medium` → `reasoning_effort: "high"` envoyé (comme la
-  config vibe `thinking = "high"` de zai). `:low` → `"none"`, `:off` →
-  **champ omis** (vibe 3.x omet `reasoning_effort` quand le niveau est `off`
-  et que les niveaux du modèle ne sont pas curatés).
+- Depuis vibe 3.1.0, le niveau part **tel quel** sur le wire : `:low` →
+  `reasoning_effort: "low"`, `:medium` → `"medium"`, `:high` → `"high"`,
+  `:xhigh` → `"xhigh"`, `:max` → `"max"` (la réduction none/high de vibe 3.0.x
+  est abandonnée). `:minimal` (niveau pi seul) → `"low"`.
+- `:off` → `"none"` si le modèle est curaté (levels connues dans
+  `KNOWN_MODEL_SPECS`), **champ omis** sinon — comme vibe 3.1.0
+  (`request_reasoning` : off → None quand le support du modèle est inconnu).
 - La température envoyée est celle de la config vibe (1.0 pour zai/large-4) —
   vibe 3.x ne force pas la température.
 - Le modèle peut légitimement ne pas émettre de thinking sur une question

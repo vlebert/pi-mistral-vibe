@@ -1,12 +1,14 @@
 /**
  * streamSimple implementation for the mistral-vibe provider.
  *
- * Replicates the wire behavior of `mistral-vibe` 3.0.2 agent turns
+ * Replicates the wire behavior of `mistral-vibe` 3.1.0 agent turns
  * (mistralai_vibe_local_harness/vibe/adapters/mistral.py + the official
- * `mistralai` Python SDK 2.6.0) on top of pi's streaming contract:
- *  - raw fetch (no SDK) with the exact vibe 3.x headers: SDK User-Agent
- *    (speakeasy-sdk/python …), x-affinity, Authorization, Accept SSE
- *  - reasoning_effort for thinking models (none/high), temperature sent
+ * `mistralai` Python SDK 3.5.0) on top of pi's streaming contract:
+ *  - raw fetch (no SDK) with the exact vibe 3.1.x headers: vibe CLI
+ *    User-Agent (mistral-client-python/Mistral-Vibe/<v>, injected via
+ *    http_headers), x-affinity, Authorization, Accept SSE
+ *  - reasoning_effort sent as the level written (low/medium/high/xhigh/max;
+ *    off→"none" for curated models, omitted otherwise), temperature sent
  *    as-is from the vibe config
  *  - telemetry metadata block (optional, config.local.json)
  *  - unset fields (max_tokens/tools/reasoning_effort) are OMITTED, not sent
@@ -34,6 +36,7 @@ import {
 import {
   buildVibeMetadata,
   buildWireRequest,
+  detectTerminalEmulator,
   mapThinkingToReasoningEffort,
   parseMistralSse,
   sanitizeSurrogates,
@@ -43,6 +46,7 @@ import {
   type PiContentBlock,
 } from "./wire.js";
 import {
+  KNOWN_MODEL_SPECS,
   resolveApiKey,
   type VibeRuntime,
 } from "./vibe-config.js";
@@ -112,17 +116,26 @@ export function streamMistralVibe(
       // not "off" (compaction.js: `if (model.reasoning && thinkingLevel &&
       // thinkingLevel !== "off") options.reasoning = thinkingLevel`). So
       // undefined means the user chose off — never fall back to a default.
+      // vibe 3.1.0 sends the level as written (REASONING_WIRE_VALUES[MISTRAL]
+      // = identity); "off" becomes "none" only for curated models (their
+      // known_models.py ReasoningSupport.levels are non-empty), else omitted.
       const reasoningLevel = options?.reasoning ?? "off";
-      const reasoningEffort = mapThinkingToReasoningEffort(reasoningLevel);
+      const reasoningEffort = mapThinkingToReasoningEffort(
+        reasoningLevel,
+        KNOWN_MODEL_SPECS[model.id]?.thinkingLevels,
+      );
       // vibe 3.x sends the model's config temperature as-is (no forcing
       // to 1.0). pi's explicit options.temperature wins when set, then the
       // vibe config entry, then vibe's ModelConfig default (0.2).
-      const configTemperature = [...runtime.models, ...runtime.defaultModels]
-        .find((m) => m.name === model.id)?.temperature;
-      const temperature = options?.temperature ?? configTemperature ?? 0.2;
-      // top_p: pi exposes it via samplingParams (model defaults + per-request
-      // overrides). vibe 3.x sends top_p when the model route has one.
+      const configModel = [...runtime.models, ...runtime.defaultModels].find(
+        (m) => m.name === model.id,
+      );
+      const temperature =
+        options?.temperature ?? configModel?.temperature ?? 0.2;
+      // top_p: vibe sends the model route's top_p from the config when set;
+      // pi's explicit samplingParams override it.
       const topP = (options?.samplingParams?.top_p ??
+        configModel?.top_p ??
         model.samplingParams?.top_p) as number | undefined;
 
       const supportsImages = model.input.includes("image");
@@ -151,16 +164,17 @@ export function streamMistralVibe(
         systemPrompt,
       );
 
-      // vibe 3.x computes a dynamic output cap (context window minus estimated
-      // input minus a 4096-token reserve). pi gives us model.maxTokens and an
-      // optional override; we send the smaller of the two. The field is
-      // omitted from the body when null (vibe 3.x / SDK behaviour).
+      // vibe 3.1.0 only sends max_tokens when a cap is configured
+      // (session max_tokens or agent_max_output_tokens); otherwise
+      // output_token_cap() returns None and the field is omitted. pi gives us
+      // model.maxTokens and an optional override; we send the smaller of the
+      // two (documented deliberate divergence: protects pi's context window).
       const maxTokens = Math.min(
         options?.maxTokens ?? model.maxTokens,
         model.maxTokens,
       );
 
-      // vibe 3.x always sends a telemetry metadata block in the body
+      // vibe 3.1.x always sends a telemetry metadata block in the body
       // (build_request_metadata; CLI launch context), with the session id
       // also used for x-affinity. It carries fabricated client-identity
       // fields (agent_entrypoint "cli", client_name "vibe_cli"), so it can
@@ -176,6 +190,12 @@ export function streamMistralVibe(
         ? buildVibeMetadata({
             version: runtime.version,
             sessionId: options?.sessionId,
+            terminalEmulator: detectTerminalEmulator(
+              process.env as Record<string, string | undefined>,
+            ),
+            // pi exposes no user-message id at the stream boundary, so
+            // metadata.message_id is omitted (vibe 3.1 adds it when a
+            // current user message exists). Documented gap in README.md.
           })
         : undefined;
 
@@ -191,10 +211,6 @@ export function streamMistralVibe(
         topP,
         metadata,
         tools,
-        toolChoice: options?.toolChoice as
-          | string
-          | { name: string }
-          | undefined,
         reasoningEffort,
       });
 

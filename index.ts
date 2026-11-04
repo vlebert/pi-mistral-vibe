@@ -1,11 +1,11 @@
 /**
  * mistral-vibe — a pi provider that talks to the Mistral API exactly like the
- * `mistral-vibe` harness 3.0.2 does (same headers, same reasoning behavior,
+ * `mistral-vibe` harness 3.1.0 does (same headers, same reasoning behavior,
  * same models), reading its API key and model config from the local ~/.vibe
  * installation.
  *
- * Wire parity target: vibe 3.0.2 agent turns (mistralai_vibe_local_harness/
- * vibe/adapters/mistral.py + mistralai Python SDK 2.6.0).
+ * Wire parity target: vibe 3.1.0 agent turns (mistralai_vibe_local_harness/
+ * vibe/adapters/mistral.py + mistralai Python SDK 3.5.0).
  *
  * Auto-discovered from ~/.pi/agent/extensions/mistral-vibe/index.ts.
  * `/reload` re-reads ~/.vibe/config.toml and ~/.vibe/.env.
@@ -13,6 +13,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
+  KNOWN_MODEL_SPECS,
   loadVibeRuntime,
   resolveApiKey,
   type VibeModelConfig,
@@ -22,30 +23,15 @@ import { streamMistralVibe } from "./stream.js";
 
 const PROVIDER_ID = "mistral-vibe";
 
-/**
- * Real model specs (docs.mistral.ai) keyed by the vibe config model name.
- * Fallback: auto_compact_threshold (vibe's compaction trigger, NOT the context
- * window) or a conservative 200k. Override any value via pi models.json.
- */
-const KNOWN_MODEL_SPECS: Record<
-  string,
-  { contextWindow: number; maxTokens: number }
-> = {
-  "zai-glm-5-2": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.2 (Mistral-hosted)
-  "zai-glm-5-3": { contextWindow: 1_000_000, maxTokens: 128_000 }, // GLM 5.3 (Mistral-hosted)
-  "mistral-large-4-0": { contextWindow: 1_048_576, maxTokens: 262_144 }, // Mistral Large 4
-  "mistral-vibe-cli-latest": { contextWindow: 262_144, maxTokens: 16_384 }, // mistral-medium-3.5
-};
-
-/** vibe thinking level -> pi thinking levels (informational; wire mapping happens in stream). */
+/** vibe 3.1.0 thinking levels map 1:1 onto pi's ("minimal" is pi-only);
+ *  informational — the wire mapping happens in stream.ts. */
 const THINKING_LEVEL_MAP = {
   off: "off",
-  minimal: "none",
-  low: "none",
-  medium: "high",
+  low: "low",
+  medium: "medium",
   high: "high",
-  xhigh: "high",
-  max: "high",
+  xhigh: "xhigh",
+  max: "max",
 } as const;
 
 export default function (pi: ExtensionAPI) {

@@ -17,11 +17,65 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_BASE_URL,
   DEFAULT_VERSION,
-  MISTRAL_SDK_USER_AGENT,
+  buildUserAgent,
   parseEnvFile,
   parseTomlSubset,
   type TomlDoc,
 } from "./wire.js";
+
+/**
+ * Real model specs keyed by the vibe config model name. contextWindow comes
+ * from vibe 3.1.0's known_models.py (completion_profile) / the Mistral model
+ * catalog; maxTokens is best-effort from model cards. `thinkingLevels` is the
+ * model's curated ReasoningSupport.levels in vibe 3.1.0 known_models.py —
+ * present only for curated models; undefined means "unknown" (support None),
+ * in which case vibe omits `reasoning_effort` for thinking=off. Both
+ * config.toml names and catalog ids are keyed, since they can differ
+ * (mistral-large-4 vs mistral-large-4-0). Fallback for contextWindow:
+ * auto_compact_threshold (vibe's compaction trigger, NOT the context window)
+ * or a conservative 200k. Override any value via pi models.json.
+ */
+export interface KnownModelSpec {
+  contextWindow: number;
+  maxTokens: number;
+  /** Curated reasoning levels (vibe 3.1.0 known_models.py); undefined = unknown. */
+  thinkingLevels?: readonly string[];
+}
+
+export const KNOWN_MODEL_SPECS: Record<string, KnownModelSpec> = {
+  // Not curated in vibe 3.1.0 known_models.py → reasoning support unknown.
+  "zai-glm-5-2": { contextWindow: 1_048_576, maxTokens: 128_000 },
+  // _GLM_5_3: ReasoningSupport(("low", "high", "max"), can_turn_off=False).
+  "zai-glm-5-3": {
+    contextWindow: 1_048_576,
+    maxTokens: 128_000,
+    thinkingLevels: ["low", "high", "max"],
+  },
+  "zai-glm-5-3-flash": { contextWindow: 1_048_576, maxTokens: 128_000 },
+  "deepseek-v4-1-flash-1017": { contextWindow: 1_048_576, maxTokens: 128_000 },
+  // _MISTRAL_LARGE_4: ReasoningSupport(("low", "high", "max"), can_turn_off=False).
+  "mistral-large-4": {
+    contextWindow: 1_048_576,
+    maxTokens: 262_144,
+    thinkingLevels: ["low", "high", "max"],
+  },
+  "mistral-large-4-0": {
+    contextWindow: 1_048_576,
+    maxTokens: 262_144,
+    thinkingLevels: ["low", "high", "max"],
+  },
+  // _MISTRAL_MEDIUM_3_5: ReasoningSupport(("high",), can_turn_off=True).
+  "mistral-medium-latest": {
+    contextWindow: 262_144,
+    maxTokens: 16_384,
+    thinkingLevels: ["high"],
+  },
+  "mistral-vibe-cli-latest": {
+    contextWindow: 262_144,
+    maxTokens: 16_384,
+    thinkingLevels: ["high"],
+  },
+};
 
 /** Extension-level options (config.local.json next to this file,
  *  gitignored). Reloading (/reload) re-reads them. */
@@ -45,6 +99,7 @@ export interface VibeModelConfig {
   provider: string;
   alias?: string;
   temperature?: number;
+  top_p?: number;
   thinking?: string;
   input_price?: number;
   output_price?: number;
@@ -57,8 +112,10 @@ export interface VibeRuntime {
   vibeDir: string;
   baseUrl: string; // api_base from config, default https://api.mistral.ai/v1
   apiKeyEnvVar: string; // e.g. MISTRAL_API_KEY
-  /** User-Agent for agent-turn requests: the mistralai SDK default
-   *  (vibe 3.x sends this on agent turns, not the vibe CLI UA). */
+  /** User-Agent for agent-turn requests: since vibe 3.1.0 the vibe CLI UA
+   *  (`mistral-client-python/Mistral-Vibe/<version>`), injected by vibe into
+   *  every provider request via extra_headers → http_headers (overrides the
+   *  SDK default UA). */
   userAgent: string;
   version: string;
   providers: VibeProviderConfig[];
@@ -205,9 +262,11 @@ export function loadVibeRuntime(): VibeRuntime {
   const dir = vibeDir();
   const doc = readVibeConfigToml(dir);
   const version = findInstalledVibeVersion() ?? DEFAULT_VERSION;
-  // vibe 3.x agent turns carry the SDK's default User-Agent, not the vibe
-  // CLI UA (which is only sent on utility completions).
-  const userAgent = MISTRAL_SDK_USER_AGENT;
+  // Since vibe 3.1.0, agent turns carry the vibe CLI UA
+  // (extra_headers=with_user_agent(...) → request_headers() → SDK http_headers,
+  // which Speakeasy applies after the SDK default UA). buildUserAgent matches
+  // vibe/utils/http.py get_user_agent("mistral").
+  const userAgent = buildUserAgent(version);
   const { options, warning: optionsWarning } = loadExtensionOptions();
   if (optionsWarning) warnings.push(optionsWarning);
 
@@ -236,6 +295,7 @@ export function loadVibeRuntime(): VibeRuntime {
         alias: entry.alias ? String(entry.alias) : undefined,
         temperature:
           typeof entry.temperature === "number" ? entry.temperature : undefined,
+        top_p: typeof entry.top_p === "number" ? entry.top_p : undefined,
         thinking: entry.thinking ? String(entry.thinking) : undefined,
         input_price:
           typeof entry.input_price === "number" ? entry.input_price : undefined,

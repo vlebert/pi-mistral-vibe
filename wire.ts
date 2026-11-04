@@ -3,14 +3,18 @@
  *
  * This module is deliberately dependency-free (no pi-ai imports) so the
  * request/header contract can be reasoned about and unit-tested in isolation.
- * The contract mirrors what the `mistral-vibe` harness 3.0.2 sends to
- * https://api.mistral.ai via the official `mistralai` Python SDK 2.6.0:
- *  - User-Agent is the SDK default (`speakeasy-sdk/python …`), NOT the vibe
- *    UA — vibe 3.x only sends its own UA on utility completions (titles,
- *    narration, probes), not on agent turns
- *  - x-affinity header carries the session affinity id
- *  - reasoning_effort mapping (low→none, medium/high/max→high; off omitted
- *    unless the model's thinking_levels are curated to include "off")
+ * The contract mirrors what the `mistral-vibe` harness 3.1.0 sends to
+ * https://api.mistral.ai via the official `mistralai` Python SDK 3.5.0:
+ *  - User-Agent is the vibe CLI UA (`mistral-client-python/Mistral-Vibe/<v>`)
+ *    — vibe 3.1.0 injects it into every provider request via
+ *    `extra_headers=with_user_agent(...)` → `request_headers()` → the SDK's
+ *    `http_headers`, which override the SDK default UA (basesdk.py applies
+ *    per-request http_headers last)
+ *  - x-affinity header carries the session affinity id (request_headers())
+ *  - reasoning_effort goes out as the level written (off→none, low→low,
+ *    medium→medium, high→high, xhigh→xhigh, max→max); "off" is sent as
+ *    "none" only to a model whose reasoning levels are curated (known_models),
+ *    otherwise the field is omitted
  *  - telemetry `metadata` body block
  *  - unset fields (max_tokens / tools / reasoning_effort) are OMITTED, not
  *    sent as explicit null (the SDK omits UNSET fields; vibe 3.x only passes
@@ -19,11 +23,12 @@
  *  - no prompt_cache_key in the body
  */
 
+import { readFileSync } from "node:fs";
 import { arch, platform, release } from "node:os";
 
 export const DEFAULT_BASE_URL = "https://api.mistral.ai/v1";
 /** Fallback when the installed vibe version cannot be read. */
-export const DEFAULT_VERSION = "3.0.2";
+export const DEFAULT_VERSION = "3.1.0";
 
 export interface WireRequest {
   url: string;
@@ -32,32 +37,97 @@ export interface WireRequest {
 }
 
 /**
- * The User-Agent the `mistralai` Python SDK 2.6.0 sends by default (generated
- * by Speakeasy). vibe 3.x agent-turn requests carry this UA, not the vibe CLI
- * UA — vibe only overrides it on utility completions (title, narration, probe)
- * via `extra_headers={"user-agent": get_user_agent(backend)}`.
- * The value is a constant of the SDK version, independent of the vibe version.
+ * The User-Agent the `mistralai` Python SDK 3.5.0 sends by default (generated
+ * by Speakeasy). Reference only: since vibe 3.1.0, agent-turn requests carry
+ * the vibe CLI UA instead (see buildUserAgent) because vibe injects it through
+ * `http_headers`, which override this SDK default. The value is a constant of
+ * the SDK version, independent of the vibe version.
  */
 export const MISTRAL_SDK_USER_AGENT =
-  "speakeasy-sdk/python 2.6.0 2.884.13 1.0.0 mistralai";
+  "speakeasy-sdk/python 3.5.0 2.935.1 1.0.0 mistralai";
 
 /**
- * vibe utils/http.py get_user_agent(backend="mistral") — still used by vibe
- * for utility completions and telemetry, but NOT for agent-turn requests.
- * Kept for reference / utility-call parity.
+ * vibe utils/http.py get_user_agent(backend="mistral") — THE User-Agent of
+ * agent-turn requests since vibe 3.1.0: the host builds the runtime config with
+ * `extra_headers=with_user_agent(provider.extra_headers, "mistral")`
+ * (vibe/app_server/_runtime.py), the adapter forwards it as the SDK's
+ * `http_headers`, and Speakeasy applies per-request headers last, overriding
+ * the SDK default UA. Same value on utility completions and telemetry.
  */
 export function buildUserAgent(version: string): string {
   return `mistral-client-python/Mistral-Vibe/${version}`;
 }
 
+export type TerminalEmulator =
+  | "vscode"
+  | "vscode_insiders"
+  | "cursor"
+  | "jetbrains"
+  | "apple_terminal"
+  | "iterm2"
+  | "wezterm"
+  | "ghostty"
+  | "alacritty"
+  | "kitty"
+  | "hyper"
+  | "windows_terminal"
+  | "unknown";
+
+/**
+ * Best-effort port of vibe's Rust terminal_detect (vibe-rs). Falls back to
+ * "unknown" like vibe's TerminalEmulator.UNKNOWN, which IS serialized in the
+ * metadata block (captured on vibe 3.1.0 with an empty environment).
+ */
+export function detectTerminalEmulator(
+  env: Record<string, string | undefined>,
+): TerminalEmulator {
+  if (env.WT_SESSION || env.WT_PROFILE_ID) return "windows_terminal";
+  if (env.WEZTERM_PANE) return "wezterm";
+  if (env.GHOSTTY_RESOURCES_DIR) return "ghostty";
+  if (env.KITTY_WINDOW_ID) return "kitty";
+  if (env.ALACRITTY_SOCKET || env.ALACRITTY_LOG) return "alacritty";
+  if (env.TERMINAL_EMULATOR === "Apple_Terminal") return "apple_terminal";
+  switch (env.TERM_PROGRAM) {
+    case "vscode":
+      return (env.TERM_PROGRAM_VERSION ?? "").toLowerCase().includes("insider")
+        ? "vscode_insiders"
+        : "vscode";
+    case "iTerm.app":
+    case "iterm2":
+      return "iterm2";
+    case "WezTerm":
+      return "wezterm";
+    case "Hyper":
+      return "hyper";
+    case "Cursor":
+      return "cursor";
+    case "ghostty":
+      return "ghostty";
+    case "alacritty":
+      return "alacritty";
+    case "kitty":
+      return "kitty";
+    case "JetBrains-JediTerm":
+    case "jetbrains":
+      return "jetbrains";
+    case "Apple_Terminal":
+      return "apple_terminal";
+    default:
+      return "unknown";
+  }
+}
+
 export interface VibeMetadataInput {
-  /** Installed vibe version (e.g. "3.0.2"). */
+  /** Installed vibe version (e.g. "3.1.0"). */
   version: string;
   /** Session id (also sent as x-affinity). */
   sessionId?: string;
   /** vibe call_type: "main_call" for agent turns, "secondary_call" for
    *  utility completions (titles, compaction…). */
   callType?: "main_call" | "secondary_call";
+  /** Terminal emulator (vibe TerminalEmulator); "unknown" when undetected,
+   *  which vibe also serializes. */
+  terminalEmulator?: TerminalEmulator;
 }
 
 /**
@@ -84,17 +154,23 @@ export function vibeMetadataEnabled(
 }
 
 /**
- * The telemetry `metadata` block vibe 3.0.2 puts in the chat-completions
+ * The telemetry `metadata` block vibe 3.1.0 puts in the chat-completions
  * body (core/telemetry/build_metadata.py build_request_metadata +
  * TelemetryRequestMetadata, CLI launch context: agent_entrypoint "cli",
  * client_name "vibe_cli", call_source "vibe_code", host_kind "local").
- * None-valued fields are omitted, mirroring vibe's
- * `model_dump(exclude_none=True)`.
+ * vibe 3.1.0 also adds `message_id` when a current user message exists;
+ * pi has no equivalent, so it is omitted. None-valued fields are omitted,
+ * mirroring vibe's `model_dump(exclude_none=True)`.
  */
 export function buildVibeMetadata(input: VibeMetadataInput): Record<string, unknown> {
-  const osId =
-    platform() === "win32" ? "windows" : platform();
-  const archId = arch() === "x64" ? "x86_64" : arch();
+  const osId = platform() === "win32" ? "windows" : platform();
+  // vibe uses platform.machine().lower(): x86_64, aarch64 (Linux), arm64 (macOS).
+  const archId =
+    arch() === "x64"
+      ? "x86_64"
+      : arch() === "arm64" && platform() === "linux"
+        ? "aarch64"
+        : arch();
   const metadata: Record<string, unknown> = {
     os: osId,
     arch: archId,
@@ -107,41 +183,67 @@ export function buildVibeMetadata(input: VibeMetadataInput): Record<string, unkn
     client_name: "vibe_cli",
     client_version: input.version,
   };
-  const osVersion = release();
+  const osVersion = platformVersion();
   if (osVersion) metadata.os_version = osVersion;
   if (input.sessionId) metadata.session_id = input.sessionId;
+  metadata.terminal_emulator = input.terminalEmulator ?? "unknown";
   return metadata;
 }
 
-export type ReasoningEffort = "none" | "high";
+/**
+ * vibe get_platform_version(): VERSION_ID (or VERSION) from /etc/os-release on
+ * Linux, platform version elsewhere. Node has no portable macOS product
+ * version, so release() (the kernel release) is the best-effort fallback.
+ */
+function platformVersion(): string | undefined {
+  if (platform() === "linux") {
+    try {
+      const osRelease = readFileSync("/etc/os-release", "utf8");
+      const versionId = osRelease.match(/^VERSION_ID="?([^"\n]+)"?/m);
+      if (versionId) return versionId[1];
+      const version = osRelease.match(/^VERSION="?([^"\n]+)"?/m);
+      if (version) return version[1];
+    } catch {
+      // fall through to the kernel release
+    }
+  }
+  return release() || undefined;
+}
+
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * vibe 3.0.2 mapping (vibe/core/llm/backend/mistral.py
- * _THINKING_TO_REASONING_EFFORT + mistralai_vibe_local_harness/vibe/adapters/
- * mistral.py): low -> "none", medium/high/max -> "high".
+ * vibe 3.1.0 mapping (mistralai_vibe_local_harness/vibe/completion_profile/
+ * reasoning.py REASONING_WIRE_VALUES[WireFormat.MISTRAL] = _EFFORT_WIRE,
+ * applied by vibe/adapters/mistral.py): the level goes out AS WRITTEN —
+ * low→"low", medium→"medium", high→"high", xhigh→"xhigh", max→"max" (any
+ * other word would go out unchanged too). The old 3.0.x reduction to
+ * none/high is gone.
  *
- * "off" is omitted here (undefined): vibe 3.x sends "none" for "off" only
- * when the model's thinking_levels are curated to include "off" (e.g. the
- * default mistral-vibe-cli-latest has thinking_levels=["off","high"]). pi
- * does not know the model's curated levels, so we omit — matching vibe's
- * behaviour for uncurated models.
+ * "off" → "none" only when the model's reasoning levels are curated
+ * (known_models.py ReasoningSupport.levels non-empty, e.g. cli-latest has
+ * ("high",)); for an uncurated model vibe omits the field entirely
+ * (request_reasoning: support None + off → None). `curatedLevels` carries
+ * that curation from KNOWN_MODEL_SPECS.
  *
- * pi-specific levels: "minimal" maps to "none" (closest wire value below
- * "low"), "xhigh" maps to "high" (vibe has no level between high and max;
- * both map to "high" on the wire).
+ * pi-specific level: "minimal" has no vibe equivalent; the closest standard
+ * level is "low".
  */
 export function mapThinkingToReasoningEffort(
   level: string | undefined,
+  curatedLevels?: readonly string[],
 ): ReasoningEffort | undefined {
   switch (level) {
+    case "off":
+      return curatedLevels && curatedLevels.length > 0 ? "none" : undefined;
     case "minimal":
+      return "low";
     case "low":
-      return "none";
     case "medium":
     case "high":
     case "xhigh":
     case "max":
-      return "high";
+      return level;
     default:
       return undefined;
   }
@@ -305,6 +407,8 @@ export interface MistralChatMessage {
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown[];
+  /** SDK 3.5.0 serializes AssistantMessage.prefix (default false). */
+  prefix?: boolean;
 }
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER =
@@ -519,20 +623,34 @@ export function toMistralMessages(
       }
       const content = msg.content ?? [];
       const hadImages = content.some((item) => item.type === "image");
-      const parts = content
-        .filter((item) => item.type === "text" || supportsImages)
-        .map((item) => {
-          if (item.type === "text")
-            return { type: "text", text: sanitizeSurrogates(item.text ?? "") };
-          // vibe 3.x format: image_url is an object {"url": "data:..."} (snake_case),
-          // matching the SDK's ImageURLChunk serialization.
-          return {
-            type: "image_url",
-            image_url: { url: `data:${item.mimeType};base64,${item.data}` },
-          };
-        });
-      if (parts.length > 0) {
+      if (hadImages && supportsImages) {
+        const parts = content
+          .filter((item) => item.type === "text" || item.type === "image")
+          .map((item) => {
+            if (item.type === "text")
+              return {
+                type: "text",
+                text: sanitizeSurrogates(item.text ?? ""),
+              };
+            // vibe 3.x format: image_url is an object {"url": "data:..."}
+            // (snake_case), matching the SDK's ImageURLChunk serialization.
+            return {
+              type: "image_url",
+              image_url: { url: `data:${item.mimeType};base64,${item.data}` },
+            };
+          });
         result.push({ role: "user", content: parts });
+        continue;
+      }
+      // vibe's _content() sends text-only messages as one plain string,
+      // blocks joined by "\n\n" (not a chunk array); only images force the
+      // array form.
+      const textContent = content
+        .filter((item) => item.type === "text")
+        .map((item) => sanitizeSurrogates(item.text ?? ""))
+        .join("\n\n");
+      if (textContent.length > 0) {
+        result.push({ role: "user", content: textContent });
         continue;
       }
       if (hadImages && !supportsImages) {
@@ -544,21 +662,17 @@ export function toMistralMessages(
       continue;
     }
     if (msg.role === "assistant") {
-      const contentParts: unknown[] = [];
+      const reasoningChunks: unknown[] = [];
+      const textParts: string[] = [];
       const toolCalls: unknown[] = [];
       for (const block of (msg.content ?? []) as PiContentBlock[]) {
         if (block.type === "text") {
-          if ((block.text ?? "").trim().length > 0) {
-            contentParts.push({
-              type: "text",
-              text: sanitizeSurrogates(block.text ?? ""),
-            });
-          }
+          textParts.push(sanitizeSurrogates(block.text ?? ""));
           continue;
         }
         if (block.type === "thinking") {
           if ((block.thinking ?? "").trim().length > 0) {
-            contentParts.push({
+            reasoningChunks.push({
               type: "thinking",
               thinking: [
                 { type: "text", text: sanitizeSurrogates(block.thinking ?? "") },
@@ -568,20 +682,40 @@ export function toMistralMessages(
           continue;
         }
         if (block.type === "toolCall") {
+          // SDK 3.5.0's ToolCall model serializes function/id/type/index,
+          // with index defaulting to 0 since the adapter never sets it.
           toolCalls.push({
-            id: block.id,
-            type: "function",
             function: {
               name: block.name,
               arguments: JSON.stringify(block.arguments ?? {}),
             },
+            id: block.id,
+            type: "function",
+            index: 0,
           });
         }
       }
-      const assistantMessage: MistralChatMessage = { role: "assistant" };
-      if (contentParts.length > 0) assistantMessage.content = contentParts;
+      // vibe's _message_payload: without reasoning, content is the joined
+      // text as a plain string (or null); with reasoning, all thinking chunks
+      // come first, then ONE text chunk holding every text block joined by
+      // "\n\n". The SDK 3.5.0 serializer always adds prefix:false.
+      const textContent = textParts.join("\n\n");
+      let assistantContent: unknown = null;
+      if (reasoningChunks.length > 0) {
+        assistantContent = reasoningChunks;
+        if (textContent.length > 0) {
+          reasoningChunks.push({ type: "text", text: textContent });
+        }
+      } else if (textContent.length > 0) {
+        assistantContent = textContent;
+      }
+      const assistantMessage: MistralChatMessage = {
+        role: "assistant",
+        content: assistantContent,
+        prefix: false,
+      };
       if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
-      if (contentParts.length > 0 || toolCalls.length > 0) {
+      if (assistantContent !== null || toolCalls.length > 0) {
         result.push(assistantMessage);
       }
       continue;
@@ -624,7 +758,7 @@ export function toMistralMessages(
         .map((part) =>
           part.type === "text" ? sanitizeSurrogates(part.text ?? "") : "",
         )
-        .join("\n");
+        .join("\n\n"); // vibe's _text() joins blocks with a blank line
       const hadImages = content.some((part) => part.type === "image");
       const toolText = buildToolResultText(
         textResult,
@@ -679,9 +813,9 @@ function buildToolResultText(
 export interface BuildWireRequestInput {
   baseUrl: string; // e.g. https://api.mistral.ai/v1 (as in vibe api_base)
   apiKey: string;
-  /** User-Agent header value. For agent turns, pass MISTRAL_SDK_USER_AGENT
-   *  (the SDK default vibe 3.x sends). For utility completions, pass
-   *  buildUserAgent(version) (the vibe CLI UA). */
+  /** User-Agent header value. Since vibe 3.1.0 agent turns carry the vibe
+   *  CLI UA: pass buildUserAgent(version). (MISTRAL_SDK_USER_AGENT is only a
+   *  reference — the SDK default UA vibe no longer sends on agent turns.) */
   userAgent: string;
   sessionId?: string;
   model: string;
@@ -702,19 +836,19 @@ export interface BuildWireRequestInput {
     description?: string;
     parameters: Record<string, unknown>;
   }>;
-  toolChoice?: string | { name: string };
   reasoningEffort?: ReasoningEffort;
 }
 
 /**
- * Assembles the HTTP request vibe 3.0.2 sends to Mistral on agent turns:
+ * Assembles the HTTP request vibe 3.1.0 sends to Mistral on agent turns:
  *  - URL: origin from api_base (version suffix stripped, like vibe's
- *    get_server_url_from_api_base) + /v1/chat/completions (the SDK path)
+ *    _server_url_from_api_base) + /v1/chat/completions (the SDK path)
  *  - headers: Authorization Bearer, Content-Type application/json,
- *    Accept text/event-stream, User-Agent = the mistralai SDK default
- *    (speakeasy-sdk/python …, NOT the vibe CLI UA), x-affinity: <sessionId>
+ *    Accept text/event-stream, User-Agent = the vibe CLI UA
+ *    (mistral-client-python/Mistral-Vibe/<version>, injected via http_headers
+ *    which override the SDK default), x-affinity: <sessionId>
  *  - body mirrors the SDK's ChatCompletionStreamRequest serialization as
- *    driven by vibe 3.x's adapter (mistralai_vibe_local_harness/vibe/adapters/
+ *    driven by vibe 3.1.x's adapter (mistralai_vibe_local_harness/vibe/adapters/
  *    mistral.py):
  *    - stream: true (always, SDK adds it for stream_async)
  *    - temperature always sent
@@ -723,7 +857,7 @@ export interface BuildWireRequestInput {
  *    - parallel_tool_calls: true when tools are present
  *    - telemetry metadata block (when enabled)
  *    - NO prompt_cache_key (vibe does not send it)
- *    - tool_choice is omitted when unset
+ *    - NO tool_choice (vibe never passes the kwarg on agent turns)
  */
 export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
   const origin = input.baseUrl.replace(/(\/v\d+).*$/, "");
@@ -753,7 +887,8 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
       type: "function",
       function: {
         name: tool.name,
-        ...(tool.description ? { description: tool.description } : {}),
+        // vibe's _tool_payload always includes description (str, may be "").
+        description: tool.description ?? "",
         parameters: tool.parameters,
       },
     }));
@@ -765,21 +900,8 @@ export function buildWireRequest(input: BuildWireRequestInput): WireRequest {
     body.reasoning_effort = input.reasoningEffort;
   }
   if (input.metadata) body.metadata = input.metadata;
-  if (input.toolChoice) body.tool_choice = mapToolChoice(input.toolChoice);
 
   return { url, headers, body };
-}
-
-export function mapToolChoice(
-  choice: string | { name: string },
-): unknown {
-  if (typeof choice === "string") {
-    if (choice === "auto" || choice === "none" || choice === "any" || choice === "required") {
-      return choice;
-    }
-    return { type: "function", function: { name: choice } };
-  }
-  return { type: "function", function: { name: choice.name } };
 }
 
 /* ------------------------------------------------------------------ */
