@@ -194,3 +194,49 @@ l'utilisateur.
      Mettre à jour `DEFAULT_VERSION`, `MISTRAL_SDK_USER_AGENT`, le UA effectivement
      envoyé (`buildUserAgent(version)`), `KNOWN_MODEL_SPECS` (dont `thinkingLevels`)
      et les commentaires si besoin.
+
+## Test différentiel vibe ↔ pi (automatisé)
+
+`tests/differential/` compare la **forme** des requêtes produites par le
+harness vibe et par pi + l'extension pour les mêmes scénarios.
+
+- `proxy.mjs` — proxy enregistreur, un port par client (8941 = vibe,
+  8942 = pi ; les deux envoient le même User-Agent, d'où la séparation par
+  port). Relaie vers l'API (`passthrough`) ou répond des chunks SSE scriptés ;
+  capture `<out>/<client>/req-<n>.json` (headers sans authorization + body).
+- `scenarios.mjs` — `text`, `tool-call`, `parallel-tool-calls`,
+  `thinking-replay` ; `turns` par client, placeholders `{workdir}` résolus
+  dans un dossier temporaire.
+- `run.mjs` — écrit une config vibe **minimale** dans un tmpdir (la config
+  perso n'est pas touchée), lance les deux clients, compare, exit 1 au
+  moindre écart de forme.
+- `compare.mjs` — comparaison structurelle (jamais le contenu).
+
+```bash
+npm run test:differential        # scripted : gratuit, déterministe
+npm run test:differential:live   # une requête réelle (crédit)
+node tests/differential/run.mjs --only tool-call,text
+```
+
+Mode `scripted` (défaut) : les réponses sont des chunks SSE canned, donc les
+tool calls et le replay thinking sont déterministes et ne coûtent rien ; c'est
+la requête construite par chaque client qui est testée. Mode `live` : seul
+`text` est fiable (le modèle décide lui-même de ses tool calls).
+
+Comparé : URL, UA, `accept`, `x-affinity`, clés du body, scalars (`model`,
+`temperature`, `reasoning_effort`, `parallel_tool_calls`, `stream`, `top_p`),
+rôles des messages, contenu string vs tableau, blocs (`text`/`thinking`/
+`image_url`), `tool_calls` (ordre, `index`, `type`, clés, longueur d'id),
+messages `tool`, enveloppe des `tools`, et `metadata` hors champs d'identité
+client.
+
+Divergences attendues, reportées en `note` (pas en échec) : `max_tokens`
+(toujours envoyé par pi), `metadata` (identité client vibe/programmatic vs
+pi), noms d'outils (table `TOOL_ALIASES`), contenu du system prompt et schémas
+d'outils (les toolsets diffèrent par nature).
+
+Limite connue : vibe en headless n'inline pas les images (`@image.png` reste
+du texte dans le prompt), donc les scénarios image ne sont pas comparables à
+vibe aujourd'hui. Côté pi, vérifier à la main :
+`pi -p "décris" --model mistral-vibe/mistral-large-4 -- ...@image.png`
+(l'image doit être un argument à part, pas inline dans le prompt).

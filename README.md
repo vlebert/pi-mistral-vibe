@@ -206,7 +206,15 @@ Différences volontaires avec le provider `mistral` natif de pi :
    et pricing sans toucher au code.
 3. Comparer le body/headers émis : hooks pi `before_provider_request` /
    `before_provider_headers`.
-4. Test réel : `pi -p "…" -m mistral-vibe/zai-glm-5-2` ou `zai-glm-5-3` (consomme du crédit).
+4. **Test différentiel automatisé** : `npm run test:differential` envoie les
+   mêmes scénarios (texte, tool call, tool calls parallèles, replay thinking)
+   au harness vibe et à pi via un proxy enregistreur, puis compare la forme des
+   requêtes (mode scripté gratuit et déterministe ; `--mode live` pour une
+   requête réelle). Détails et divergences attendues : `AGENTS.md`, section
+   « Test différentiel vibe ↔ pi ». Ajouter un scénario = éditer
+   `tests/differential/scenarios.mjs`. Scénarios image : vérification manuelle
+   uniquement (vibe headless n'inline pas les images).
+5. Test réel : `pi -p "…" --model mistral-vibe/zai-glm-5-2` ou `zai-glm-5-3` (consomme du crédit).
 
 > Note plateforme : le `fetch` de Node (undici) ajoute `accept-language` et
 > `sec-fetch-mode: cors` à toute requête, absents de celles de vibe (httpx).
@@ -280,6 +288,8 @@ Repo git autonome : `~/.pi/agent/extensions/mistral-vibe/`.
   outils avant construction de la requête.
 - `index.ts` — chargement, `registerProvider`, commande de statut, handler
   d'overflow.
+- `tests/differential/` — test différentiel vibe ↔ pi (proxy enregistreur,
+  scénarios, comparaison de forme) : `npm run test:differential`.
 
 Pas de dépendances npm (parser TOML minimal embarqué).
 

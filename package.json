@@ -3,5 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "pi provider replicating the mistral-vibe harness wire contract (headers, reasoning, models) against the Mistral API",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test:differential": "node tests/differential/run.mjs",
+    "test:differential:live": "node tests/differential/run.mjs --mode live --only text"
+  }
 }
